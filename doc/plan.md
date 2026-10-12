@@ -199,15 +199,9 @@ All objects are immutable, CBOR-encoded, and addressed by hash.
 
 **Chunk** (type 0x01): raw bytes. Not CBOR.
 
-**File** (type 0x02):
-```
-size:   uint64
-chunks: [ {hash, size} ... ] # direct list if <= 4096 chunks; size = uncompressed chunk length
-or
-index:  [ {hash, size} ... ] # pointers to FileIndex objects, for large files; size = bytes covered
-```
+**File** (type 0x02): `[size, level, refs]` with `refs = [ [hash, size] ... ]`, at most 4096 refs. Level 0: refs are chunks (size = uncompressed chunk length). Level n > 0: refs are FileIndex objects of level n − 1 (size = bytes covered).
 
-**FileIndex** (type 0x03): `[ {hash, size} ... ]`, at most 4096 chunk entries with uncompressed sizes. One level of indirection gives at most 4096 × 4096 × 256 KiB, which is more than enough. Use a second level if needed, with the same type.
+**FileIndex** (type 0x03): `[level, refs]`, at most 4096 refs, same level meaning. A file with more than 4096 chunks groups its refs into FileIndex objects at content-defined boundaries (ADR-0002), so an edit rewrites only the FileIndex objects around it. Up to 4 levels.
 
 Sizes are part of the format so that a read at any byte offset (HTTP `Range`, `Seek`, Git delta base reads) locates its chunk by prefix sums over the chunk list, without fetching or decompressing earlier chunks.
 
@@ -634,7 +628,8 @@ cmd/f1d/                 server and admin CLI
 cmd/f1/                  native client
 internal/hash/           BLAKE3 wrapper, Hash type, encoding
 internal/chunk/          FastCDC
-internal/object/         File, FileIndex, Tree (prolly), Commit, Tag; CBOR codec
+internal/object/         File, FileIndex, Tree (prolly), Commit, Tag, DigestRecord, GitRaw; CBOR codec
+internal/content/        ingest pipeline (chunk, hash, compress, digests) and random-access file reader
 internal/pack/           pack format, writer, reader
 internal/backend/        Backend interface; fs
 internal/repodir/        repository directory: refs, refs.log, locks files, holds, freeze, archive, import, attach
@@ -653,6 +648,7 @@ internal/client/         working copy, sparse, merge
 pkg/f1client/            public Go SDK for the native API
 doc/adr/                 architecture decision records
 doc/format.md            on-disk format specification (written in phase 1)
+internal/testutil/       deterministic test data, golden files
 testdata/                golden vectors, Git fixture repositories
 ```
 

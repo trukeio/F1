@@ -1,8 +1,9 @@
 STATICCHECK_VERSION := v0.7.0
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
+FUZZTIME ?= 30s
 
-.PHONY: all build test vet staticcheck fmt-check smoke ci clean
+.PHONY: all build test vet staticcheck fmt-check smoke bench fuzz ci clean
 
 all: build
 
@@ -23,6 +24,13 @@ fmt-check:
 
 smoke: build
 	scripts/smoke-serve.sh bin/f1d
+
+bench:
+	go test -run '^$$' -bench . -benchtime 3x ./...
+
+fuzz:
+	go test ./internal/object -run '^$$' -fuzz FuzzDecode -fuzztime $(FUZZTIME)
+	go test ./internal/pack -run '^$$' -fuzz FuzzPack -fuzztime $(FUZZTIME)
 
 ci: fmt-check vet staticcheck test smoke
 
