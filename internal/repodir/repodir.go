@@ -125,28 +125,54 @@ func Open(path string) (*Dir, error) {
 
 // ReadMeta reads and validates f1repo.toml without locking the repository.
 func ReadMeta(path string) (Meta, error) {
-	meta := Meta{Config: policy.Default()}
-	md, err := toml.DecodeFile(filepath.Join(path, ConfigFile), &meta)
+	data, err := os.ReadFile(filepath.Join(path, ConfigFile))
 	if err != nil {
-		return Meta{}, fmt.Errorf("repodir: %s: %w", ConfigFile, err)
+		return Meta{}, fmt.Errorf("repodir: %w", err)
 	}
-	if meta.Format > FormatVersion {
-		return Meta{}, fmt.Errorf("repodir: %s has format %d; this server supports format %d, upgrade F1 to open it", path, meta.Format, FormatVersion)
-	}
-	if meta.Format < 1 {
-		return Meta{}, fmt.Errorf("repodir: %s: missing or invalid format", ConfigFile)
-	}
-	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		return Meta{}, fmt.Errorf("repodir: %s: unknown keys %v", ConfigFile, undecoded)
-	}
-	if meta.UUID == "" {
-		return Meta{}, fmt.Errorf("repodir: %s: missing uuid", ConfigFile)
-	}
-	if err := meta.Validate(); err != nil {
-		return Meta{}, fmt.Errorf("repodir: %s: %w", ConfigFile, err)
+	meta, err := ParseMeta(data)
+	if err != nil {
+		return Meta{}, fmt.Errorf("repodir: %s: %w", path, err)
 	}
 	return meta, nil
 }
+
+// ParseMeta parses and validates the content of f1repo.toml. A format newer
+// than FormatVersion is refused with a message naming both versions.
+func ParseMeta(data []byte) (Meta, error) {
+	meta := Meta{Config: policy.Default()}
+	md, err := toml.Decode(string(data), &meta)
+	if err != nil {
+		return Meta{}, fmt.Errorf("%s: %w", ConfigFile, err)
+	}
+	if meta.Format > FormatVersion {
+		return Meta{}, fmt.Errorf("%s has format %d; this server supports format %d, upgrade F1 to open it", ConfigFile, meta.Format, FormatVersion)
+	}
+	if meta.Format < 1 {
+		return Meta{}, fmt.Errorf("%s: missing or invalid format", ConfigFile)
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		return Meta{}, fmt.Errorf("%s: unknown keys %v", ConfigFile, undecoded)
+	}
+	if meta.UUID == "" {
+		return Meta{}, fmt.Errorf("%s: missing uuid", ConfigFile)
+	}
+	if err := meta.Validate(); err != nil {
+		return Meta{}, fmt.Errorf("%s: %w", ConfigFile, err)
+	}
+	return meta, nil
+}
+
+// WriteMeta replaces f1repo.toml atomically.
+func WriteMeta(path string, meta Meta) error {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(meta); err != nil {
+		return fmt.Errorf("repodir: %w", err)
+	}
+	return writeAtomic(path, ConfigFile, buf.Bytes())
+}
+
+// NewUUID returns a random repository UUID.
+func NewUUID() string { return newUUID() }
 
 // Close releases the repository lock.
 func (d *Dir) Close() error {

@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,6 +31,14 @@ func Bytes(seed string, n int) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// Reader returns an endless stream of the same bytes Bytes(seed, n) starts
+// with, for large test inputs that should not live in memory.
+func Reader(seed string) io.Reader {
+	h := blake3.New(32, nil)
+	h.Write([]byte(seed))
+	return h.XOF()
 }
 
 // RepoRoot returns the repository root (the directory holding go.mod).

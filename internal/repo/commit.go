@@ -55,6 +55,11 @@ type CommitRequest struct {
 // and updates the ref with compare-and-swap. A conflict returns a
 // *ConflictError (errors.Is ErrConflict).
 func (r *Repo) Commit(ctx context.Context, req CommitRequest) (hash.Hash, error) {
+	end, err := r.beginWrite()
+	if err != nil {
+		return hash.Zero, err
+	}
+	defer end()
 	ref := policy.FullRefName(req.Ref)
 	if err := policy.ValidRefName(ref); err != nil {
 		return hash.Zero, err
@@ -89,7 +94,7 @@ func (r *Repo) Commit(ctx context.Context, req CommitRequest) (hash.Hash, error)
 	if err != nil {
 		return hash.Zero, err
 	}
-	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: ref, Old: parent, New: h}}, req.Principal, "commit"); err != nil {
+	if err := r.updateRefs(ctx, []RefUpdate{{Ref: ref, Old: parent, New: h}}, req.Principal, "commit"); err != nil {
 		return hash.Zero, err
 	}
 	return h, nil

@@ -141,6 +141,30 @@ func (c Config) RetentionPolicy() Retention {
 	return r
 }
 
+// ValidNamespace checks a namespace name. Namespaces double as S3 bucket
+// names and directory names under repos/, so names are 1 to 63 characters
+// of lowercase letters, digits, '.', '_' and '-', starting and ending with a
+// letter or digit.
+func ValidNamespace(name string) error {
+	if len(name) == 0 || len(name) > 63 {
+		return fmt.Errorf("invalid namespace %q: must be 1 to 63 characters", name)
+	}
+	alnum := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' }
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !alnum(c) && c != '.' && c != '_' && c != '-' {
+			return fmt.Errorf("invalid namespace %q: only lowercase letters, digits, '.', '_' and '-' are allowed", name)
+		}
+	}
+	if !alnum(name[0]) || !alnum(name[len(name)-1]) {
+		return fmt.Errorf("invalid namespace %q: must start and end with a letter or digit", name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("invalid namespace %q: contains \"..\"", name)
+	}
+	return nil
+}
+
 // ValidRefName checks a full ref name such as "heads/main" or "tags/v1"
 // against Git's ref name rules (git check-ref-format), restricted so that a
 // name never contains whitespace.

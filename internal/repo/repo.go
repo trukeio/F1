@@ -55,6 +55,10 @@ type Repo struct {
 	refMu sync.Mutex
 	refs  map[string]hash.Hash
 
+	gateMu   sync.Mutex
+	gateCond *sync.Cond
+	gate     gate
+
 	groupMu sync.Mutex
 	groups  map[string]*committer
 	stop    context.CancelFunc
@@ -122,12 +126,14 @@ func Open(ctx context.Context, path string, opts Options) (*Repo, OpenReport, er
 		refs:  refs, groups: map[string]*committer{},
 		stop: stop, stopCtx: stopCtx,
 	}
+	r.gateCond = sync.NewCond(&r.gateMu)
 	return r, rep, nil
 }
 
 // Close stops the group committers, seals the open pack and releases the
-// repository.
+// repository. A frozen repository is unfrozen first.
 func (r *Repo) Close(ctx context.Context) error {
+	r.Unfreeze()
 	r.groupMu.Lock()
 	if r.closed {
 		r.groupMu.Unlock()
@@ -211,6 +217,16 @@ func (e *ConflictError) Unwrap() error { return ErrConflict }
 // values point to must be stored; the open pack is sealed first so that
 // they are durable before any ref points to them.
 func (r *Repo) UpdateRefs(ctx context.Context, updates []RefUpdate, principal, reason string) error {
+	end, err := r.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer end()
+	return r.updateRefs(ctx, updates, principal, reason)
+}
+
+// updateRefs is UpdateRefs for callers that already registered the write.
+func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, principal, reason string) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -314,5 +330,10 @@ func (r *Repo) putObject(ctx context.Context, o object.Object) (hash.Hash, error
 // Ingest stores file content and returns its File hash and digests. size
 // is the content length if known, or -1.
 func (r *Repo) Ingest(ctx context.Context, rd io.Reader, size int64) (content.Result, error) {
+	end, err := r.beginWrite()
+	if err != nil {
+		return content.Result{}, err
+	}
+	defer end()
 	return content.Ingest(ctx, r.store, rd, size, content.Options{})
 }

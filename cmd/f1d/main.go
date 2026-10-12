@@ -26,6 +26,7 @@ const usage = `Usage: f1d <command> [flags]
 Commands:
   serve     run the server
   fsck      check a repository (offline; refuses while a server has it open)
+  repo      manage repositories: list, freeze, archive, import, attach, ...
   version   print the version
 
 Run "f1d <command> -h" for command flags.
@@ -48,6 +49,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return serve(ctx, args[1:], stderr)
 	case "fsck":
 		return fsck(ctx, args[1:], stdout, stderr)
+	case "repo":
+		return repoCmd(ctx, args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "f1d %s\n", version)
 		return 0

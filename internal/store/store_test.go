@@ -399,3 +399,24 @@ func TestAutoConsolidation(t *testing.T) {
 		t.Fatalf("reopen: %+v", o.rep)
 	}
 }
+
+// A hold stops consolidation until released.
+func TestHoldBlocksConsolidation(t *testing.T) {
+	o := open(t, newDir(t), Options{SmallPackLimit: 1 << 30, DeleteGrace: -1})
+	defer o.close(t)
+	files := fill(t, o.s, 5)
+	release := o.s.Hold()
+	if !o.s.Held() {
+		t.Fatal("Held is false")
+	}
+	res, err := o.s.Consolidate(ctx, true)
+	if err != nil || len(res.Merged) != 0 {
+		t.Fatalf("consolidation while held: %+v, %v", res, err)
+	}
+	release()
+	release() // idempotent
+	if res, err = o.s.Consolidate(ctx, true); err != nil || len(res.Merged) != 5 {
+		t.Fatalf("consolidation after release: %+v, %v", res, err)
+	}
+	checkReadable(t, o.s, files)
+}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/trukeio/f1/internal/config"
+	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/serverdb"
 )
 
@@ -36,11 +37,31 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(ad
 	if err := os.MkdirAll(filepath.Join(cfg.Server.DataDir, ReposDir), 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
+	// The admin socket also guards the data directory against a second
+	// server, so it is created before anything else is opened.
+	adminLn, err := listenAdmin(filepath.Join(cfg.Server.DataDir, AdminSocket))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(filepath.Join(cfg.Server.DataDir, AdminSocket))
+	defer adminLn.Close()
+
 	db, err := serverdb.Open(ctx, filepath.Join(cfg.Server.DataDir, ServerDB))
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+
+	mgr, err := OpenManager(ctx, cfg.Server.DataDir, db, log, repo.Options{})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Graceful shutdown seals open packs.
+		if err := mgr.Close(context.Background()); err != nil {
+			log.Error("closing repositories", "err", err)
+		}
+	}()
 
 	ln, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
@@ -52,29 +73,36 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(ad
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+	admin := &http.Server{
+		Handler:           adminHandler(mgr, log),
+		ReadHeaderTimeout: 10 * time.Second,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
 
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
 	go func() { errc <- srv.Serve(ln) }()
+	go func() { errc <- admin.Serve(adminLn) }()
 
-	log.Info("server started", "addr", ln.Addr().String(), "data_dir", cfg.Server.DataDir)
+	log.Info("server started", "addr", ln.Addr().String(), "data_dir", cfg.Server.DataDir, "repositories", len(mgr.List()))
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
+	var serveErr error
 	select {
-	case err := <-errc:
-		return fmt.Errorf("serve: %w", err)
+	case serveErr = <-errc:
 	case <-ctx.Done():
 	}
 
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	err = errors.Join(srv.Shutdown(shutdownCtx), admin.Shutdown(shutdownCtx))
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return fmt.Errorf("serve: %w", serveErr)
 	}
-	if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("serve: %w", err)
+	if err != nil {
+		return fmt.Errorf("shutdown: %w", err)
 	}
 	log.Info("server stopped")
 	return nil

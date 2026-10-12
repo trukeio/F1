@@ -122,6 +122,15 @@ func Remove(path string) error {
 	return nil
 }
 
+// Checkpoint copies the WAL into the main database file and truncates the
+// WAL, so that cache.db alone is a consistent snapshot (for frozen copies).
+func (c *DB) Checkpoint(ctx context.Context) error {
+	if _, err := c.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("cache: checkpoint: %w", err)
+	}
+	return nil
+}
+
 // Close closes the database.
 func (c *DB) Close() error { return c.db.Close() }
 

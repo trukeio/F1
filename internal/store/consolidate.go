@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -50,7 +51,7 @@ func (s *Store) Consolidate(ctx context.Context, force bool) (Consolidation, err
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
-	if closed {
+	if closed || s.holds > 0 {
 		return res, nil
 	}
 
@@ -173,6 +174,33 @@ func (s *Store) sealConsolidated(ctx context.Context, op *openPack) (cache.NewPa
 		return cache.NewPack{}, err
 	}
 	return cache.NewPack{Name: op.name, Size: size, Entries: entries, Digests: op.digests}, nil
+}
+
+// Hold prevents the store from deleting or replacing pack files until the
+// returned release function is called: consolidation (and, later, GC) skips
+// the repository while any hold is active. Hold waits for a running
+// consolidation to finish, so that when it returns the set of pack files
+// only grows. Holds back freeze, archive and backup (doc/plan.md,
+// "Repository directory").
+func (s *Store) Hold() (release func()) {
+	s.maint.Lock()
+	s.holds++
+	s.maint.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.maint.Lock()
+			s.holds--
+			s.maint.Unlock()
+		})
+	}
+}
+
+// Held reports whether a hold is active.
+func (s *Store) Held() bool {
+	s.maint.Lock()
+	defer s.maint.Unlock()
+	return s.holds > 0
 }
 
 // deleteDue deletes replaced pack files whose grace period has passed.

@@ -615,7 +615,7 @@ Later: OIDC login for the native client and web flows (authorization code with P
 ## Operations
 
 - Single binary `f1d` with subcommands: `serve`, `gc`, `fsck`, `user`, `token`, `s3key`, `acl`, `ns`, `repo` (`archive`, `freeze`, `unfreeze`, `import`, `attach`, `detach`, `export-acl`, `import-acl`, `rebuild-cache`), `backup`.
-- Admin commands that act on a running server talk to it over a Unix socket (`<data_dir>/admin.sock`, mode 0600). Commands that work offline (`fsck`, `rebuild-cache`, `archive` of a detached repository) open the directory directly and refuse if the server holds it.
+- Admin commands that act on a running server talk to it over a Unix socket (`<data_dir>/admin.sock`, mode 0600; HTTP with JSON bodies, ADR-0004). The socket also prevents a second server on the same data directory. Commands that work offline (`fsck`, `rebuild-cache`, `archive` of a detached repository) open the directory directly and refuse if the server holds it.
 - `fsck <ns>`: verify pack checksums, that `cache.db` matches the packs, reachability from refs, and invariant D9. Works on a copied or extracted repository directory without a server (`f1d fsck --dir <path>`).
 - Metrics: Prometheus text format on `/metrics` (no client library dependency required; write the exposition format directly or use `prometheus/client_golang` if approved).
 - Structured logging with `log/slog`.
@@ -638,6 +638,7 @@ internal/cache/          per-repository cache.db (index, digests, git map, uploa
 internal/store/          pack store: open pack, sealing, existence check (D9), reads, consolidation
 internal/tree/           prolly tree lookup, iteration, incremental update, diff
 internal/serverdb/       server.db (principals, tokens, S3 keys, ACLs, registry); migrations
+internal/server/         f1d server: listeners, repository manager, admin socket, import
 internal/repo/           core operations, group commit, locks, ACL enforcement
 internal/digest/         DigestRecords, digest index, background job
 internal/policy/         namespace config, retention
@@ -722,7 +723,8 @@ Acceptance:
 
 ### Phase 2b: repository portability
 
-- `f1d repo freeze|unfreeze|archive|import|attach|detach|rebuild-cache`, GC holds (also respected by pack consolidation), ACL export and import, admin socket.
+- `f1d repo freeze|unfreeze|archive|import|attach|detach|rebuild-cache|list`, GC holds (also respected by pack consolidation), admin socket (ADR-0004).
+- ACL export and import move to phase 3, where ACLs are introduced.
 - The native API archive endpoint is delivered in phase 3, together with the rest of the native API.
 
 Acceptance:
@@ -736,6 +738,7 @@ Acceptance:
 ### Phase 3: native API, identity, ACLs, locks
 
 - Native HTTP API (including the archive endpoint), Go SDK, ACLs, locks and their enforcement in `UpdateRef`.
+- `f1d repo export-acl` and `import-acl` (moved from phase 2b).
 - Verifier chain with local tokens and external JWT issuers (JWKS). Just-in-time principals. `/api/v1/me/s3keys`.
 - Namespace presets and config validation (D12), including `tree` layout path rules.
 

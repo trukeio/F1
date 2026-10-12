@@ -80,6 +80,7 @@ type Store struct {
 
 	maint         sync.Mutex  // serializes consolidation
 	consolidating atomic.Bool // a background consolidation is running
+	holds         int         // active holds; guarded by maint
 }
 
 type openPack struct {
@@ -237,6 +238,30 @@ func (s *Store) readPackIndex(ctx context.Context, name string, size int64) (cac
 	}
 	return np, nil
 }
+
+// PackFile is a sealed, live pack file.
+type PackFile struct {
+	Name string
+	Key  string // backend key, "packs/<name>.pack"
+	Size int64
+}
+
+// LivePacks returns the sealed packs that hold the repository's objects,
+// excluding replaced packs awaiting deletion.
+func (s *Store) LivePacks(ctx context.Context) ([]PackFile, error) {
+	packs, err := s.cache.Packs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PackFile, len(packs))
+	for i, p := range packs {
+		out[i] = PackFile{Name: p.Name, Key: packKey(p.Name), Size: p.Size}
+	}
+	return out, nil
+}
+
+// Backend returns the backend holding the pack files.
+func (s *Store) Backend() backend.Backend { return s.be }
 
 // Cache returns the repository's cache.db.
 func (s *Store) Cache() *cache.DB { return s.cache }
