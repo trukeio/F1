@@ -69,7 +69,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
 | D14 | Server config format | TOML |
 | D15 | Module path | `github.com/trukeio/f1` (lowercase). The GitHub repository may be named `F1`; GitHub resolves names case-insensitively. Uppercase in a module path forces case-escaping in the module proxy (`!f1`) and exact-case imports, so it is avoided |
 | D16 | License | MIT. `LICENSE` file at the root; no per-file headers |
-| D17 | Authentication | Pluggable token verifiers behind one interface: local tokens (version 1) and external JWT issuers verified with JWKS (version 1, for G1). OIDC login later reuses the JWT verifier |
+| D17 | Authentication | Pluggable token verifiers behind one interface: local tokens (version 1) and OIDC bearer tokens from the enterprise identity provider, verified against its JWKS (version 1). F1 trusts the same provider as G1, not G1 itself, so both accept the same users and groups (ADR-0005). OIDC login in F1's own clients later reuses the same verifier |
 | D18 | Repository portability | A repository directory contains everything needed to serve the repository except identities and ACLs. A copy taken by the documented procedure (see "Repository directory") is always consistent. Deduplication between repositories is given up for this |
 | D19 | Size transparency | No API, protocol, command or user-visible behavior depends on file size. A 1-byte file and a 100 GiB file are written, read, versioned, locked, merged and exported the same way. Size affects only the internal chunk-list layout (direct list or FileIndex). Every read and write path streams; server and client memory use is bounded independently of file size |
 | D20 | Prolly tree boundaries | Name-only boundary hash, average 64 entries per node, min 16, max 512 entries, max 128 KiB encoded node size; same rule for interior nodes with the level mixed into the hash (see "Objects") |
@@ -295,7 +295,7 @@ The source of truth for a File's digests is its DigestRecord in the packs (D21).
 
 ### Locks
 
-Stored in the repository's `locks` file, one line per lock: `id, ref, path, owner (issuer:subject), created, expires`.
+Stored in the repository's `locks` file, one line per lock: id, ref, path, owner, created, expires. The owner is a principal name (`user:<name>`).
 - Locks are on exact paths (not prefixes).
 - `locks = required:<globs>`: commits that modify matching paths are rejected unless the committer holds the lock.
 - `locks = exclusive`: taking a lock is optional, but a held lock is enforced: commits by other principals that modify a locked path are rejected.
@@ -305,7 +305,7 @@ Stored in the repository's `locks` file, one line per lock: `id, ref, path, owne
 
 ### ACLs
 
-Table `acl(namespace, principal_or_group, path_prefix, perms)` in `server.db`, with perms from `read`, `write`, `lock`, `admin`. The longest matching prefix wins. Default deny.
+Table `acl(namespace, principal, path_prefix, perms)` in `server.db`, where `principal` is `user:<name>` or `group:<name>` (the same syntax as G1), with perms from `read`, `write`, `lock`, `admin`. The longest matching prefix wins. Default deny.
 
 Hash-addressed access bypasses paths, so it requires read on the whole namespace (D13). Otherwise a principal with partial read could fetch any object by hash, probe for content through `objects/missing`, or commit a tree that references an object it cannot read and then read it through its own path.
 
@@ -568,9 +568,10 @@ Safety rules:
 ### Principals
 
 - Principals and groups in `server.db`. Admin CLI: `f1d user add`, `f1d token create`, `f1d s3key create`, `f1d acl set`.
-- A principal is identified by `(issuer, subject)`. Local users have issuer `local`.
-- Principals from external issuers are created on first successful authentication (just-in-time), with group membership taken from a configured token claim.
-- Authorization check function used by all protocol layers: `Allow(principal, ns, path, perm)`. ACLs refer to principals and groups, never to issuers or token types.
+- Principal names use G1's syntax, so that administrators write ACLs the same way for both systems: `user:<name>` for a caller and `group:<name>` for each of its groups. For an OIDC caller, `<name>` is the value of the configured principal claim (default `sub`); for a local user, the name given to `f1d user add`.
+- Each principal also records the issuer that authenticated it (`local` for local users). The issuer is internal: ACLs, locks, `refs.log` and commit authors use only the principal name. A name belongs to one issuer: a local user cannot be created with the name of an existing external principal, and a token from an issuer whose principal name is taken by another issuer is refused (and logged as a security event).
+- Principals from the OIDC provider are created on first successful authentication (just-in-time). Their groups come from the token on every request, as in G1: a membership change takes effect when the token is refreshed, so token lifetimes should be short (5 to 15 minutes, the provider's setting).
+- Authorization check function used by all protocol layers: `Allow(principal, groups, ns, path, perm)`. ACLs refer to principal and group names, never to issuers or token types.
 
 ### Credentials per protocol
 
@@ -580,7 +581,7 @@ Safety rules:
 | Git and LFS | HTTP Basic, password = token (username ignored), or `Authorization: Bearer <token>` |
 | S3 | SigV4 access key and secret (local only; SigV4 cannot carry a bearer token) |
 
-An externally authenticated principal can create S3 keys for itself through the native API (`POST /api/v1/me/s3keys`), so G1 users can use S3 tools.
+An externally authenticated principal can create S3 keys for itself through the native API (`POST /api/v1/me/s3keys`), so users of the enterprise identity provider (the same users as G1's) can use S3 tools. Requests signed with such a key carry the principal's groups as of the key's last use with a token: each authenticated native request refreshes them, and they expire after a configured time (default 24 h) until the next one.
 
 ### Token verifiers
 
@@ -595,22 +596,25 @@ type Verifier interface {
 Verifiers are tried in configured order. Version 1 implements:
 
 1. **Local tokens.** Opaque random tokens with prefix `f1_`, stored as SHA-256 hashes, with expiry and revocation.
-2. **External JWT issuers (G1).** Tokens are JWTs signed by the issuer. F1 verifies them locally:
-   - Fetch the issuer's JWKS from a configured URL. Cache keys, refresh on unknown `kid` (rate-limited) and every 10 minutes.
-   - Check signature (RS256, ES256, EdDSA), `iss`, `aud` (must contain the configured F1 audience), `exp`, `nbf` with 60 s clock skew.
-   - Map `sub` to the principal, a configured claim (default `groups`) to groups.
+2. **OIDC bearer tokens from the enterprise identity provider** (Keycloak, Microsoft Entra ID, ...), the provider G1 also trusts (G1 plan §10.1, `doc/spec/access.md`). G1 does not issue tokens; F1 and G1 are both relying parties of the same provider, each registered with its own audience. Users obtain tokens with the authorization code flow with PKCE, services with the client credentials grant. Tokens are signed JWTs, verified locally:
+   - Discover the provider from its issuer URL (`<issuer>/.well-known/openid-configuration`) and fetch the `jwks_uri` it names; `jwks_url` overrides discovery. Cache keys, refresh on unknown `kid` (rate-limited) and every 10 minutes.
+   - Check signature (RS256, ES256, EdDSA), `iss`, `aud` (must contain one of the configured audiences, normally `f1`), `exp`, `nbf` with 60 s clock skew.
+   - The principal is `user:<value of principal_claim>` (default `sub`); groups are `group:<value>` for every value of every claim in `group_claims` (default `["groups"]`; a claim may be a string or a list of strings, and roles claims work too). A token without the principal claim is refused.
    - Reject `alg: none` and HMAC algorithms.
 
 ```toml
-[[auth.issuer]]
-name         = "g1"
-issuer       = "https://g1.example.com"
-jwks_url     = "https://g1.example.com/.well-known/jwks.json"
-audience     = "f1"
-groups_claim = "groups"
+[[auth.oidc]]
+name            = "corp"                                       # internal issuer label, used in logs
+issuer          = "https://login.example.com/realms/acme"      # the same provider as G1
+audiences       = ["f1"]
+principal_claim = "sub"
+group_claims    = ["groups"]
+# jwks_url      = "https://login.example.com/realms/acme/protocol/openid-connect/certs"   # optional; overrides discovery
 ```
 
-Later: OIDC login for the native client and web flows (authorization code with PKCE, device flow for the CLI). This reuses the JWT verifier; only the token acquisition is new. Opaque external tokens, if ever needed, can be supported with a third verifier using OAuth 2.0 token introspection (RFC 7662).
+Configuring several providers is allowed; their principal names must not collide (see "Principals").
+
+Later: OIDC login in F1's own clients (authorization code with PKCE in a browser, device flow for the CLI). This reuses the same verifier; only token acquisition is new. Token exchange (RFC 8693) for back-ends acting on behalf of a user, as G1 records it, is a later extension. Opaque tokens are not expected (G1 uses JWTs from the same provider); if ever needed, a third verifier can use OAuth 2.0 token introspection (RFC 7662).
 
 ## Operations
 
@@ -739,12 +743,12 @@ Acceptance:
 
 - Native HTTP API (including the archive endpoint), Go SDK, ACLs, locks and their enforcement in `UpdateRef`.
 - `f1d repo export-acl` and `import-acl` (moved from phase 2b).
-- Verifier chain with local tokens and external JWT issuers (JWKS). Just-in-time principals. `/api/v1/me/s3keys`.
+- Verifier chain with local tokens and OIDC providers (discovery, JWKS). Principal names `user:<name>` and `group:<name>`; just-in-time principals; configurable principal and group claims. `/api/v1/me/s3keys`.
 - Namespace presets and config validation (D12), including `tree` layout path rules.
 
 Acceptance:
 - API integration tests through `pkg/f1client` against an in-process server.
-- JWT tests with an in-process test issuer serving a JWKS: valid token accepted; wrong `aud`, wrong `iss`, expired, `alg: none`, HMAC-signed and unknown-`kid` tokens rejected; key rotation (new `kid`) picked up without restart; groups claim drives ACL decisions.
+- OIDC tests with an in-process test provider serving discovery and a JWKS: valid token accepted; wrong `aud`, wrong `iss`, expired, `alg: none`, HMAC-signed and unknown-`kid` tokens rejected; key rotation (new `kid`) picked up without restart; group claims (a string, a list, several claims) drive ACL decisions; a token without the principal claim is refused; a principal name already owned by another issuer (or a local user) is refused.
 - ACL tests: read and write denied and allowed by prefix; longest prefix wins.
 - Hash-addressed ACL tests (D13): a principal with read on only part of a namespace is denied every `/ns/{ns}/objects/...` endpoint and `POST /ns/{ns}/commits`; `diff` and path-scoped `log` return only readable paths; `log` without `path` is denied.
 - Lock tests: commit modifying a required-lock path without the lock is rejected; with the lock it succeeds; under `exclusive`, another principal's commit to a locked path is rejected; creating a branch whose commits touch a locked path is checked against its merge base with `default_ref`; lock expiry works.
@@ -832,7 +836,7 @@ Acceptance: documented benchmarks for ingest, small Put rate, S3 GET latency, an
 
 ## Open questions for the user
 
-1. G1 token format: confirm that G1 issues signed JWTs and publishes a JWKS. If G1 issues opaque tokens instead, phase 3 implements an RFC 7662 introspection verifier in place of the JWT verifier.
-2. G1 claims: name of the claim carrying groups or roles, and the audience value G1 puts in tokens for F1.
+1. ~~G1 token format.~~ **Resolved (2026-10-12, from `../g1`):** G1 issues no tokens. It accepts OIDC bearer tokens (signed JWTs) from the enterprise identity provider, verified against the provider's JWKS found by discovery (G1 `internal/api/auth.go`, plan §10.1). F1 trusts the same provider; no introspection verifier is needed. See D17 and "Token verifiers".
+2. ~~G1 claims.~~ **Resolved:** groups come from configurable claims, default `groups` (string or list; roles claims work too), the principal from `sub` by default, and principals are named `user:<sub>` and `group:<name>`. The audience is per service: G1 accepts its own (its example uses `g1`); F1 is registered with the provider under its own audience, `f1` by default.
 3. S3 folder markers in `tree` layout: this plan rejects keys ending in `/` (and other keys the hierarchy cannot represent) and points users to `layout = flat`. The AWS console and some tools create such markers. Confirm, or choose a representation (for example an empty directory, which Git cannot export) and record it in an ADR.
 4. Path-limited readers (D13): principals with read access to only part of a namespace cannot use the native client, Git or the object endpoints, only the path-addressed native endpoints and S3. Confirm this is acceptable for the SVN-style use case.

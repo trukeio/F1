@@ -28,7 +28,7 @@
 | D14 | Server config format | TOML |
 | D15 | Module path | `github.com/trukeio/f1` (lowercase) |
 | D16 | License | MIT, `LICENSE` at the root, no per-file headers |
-| D17 | Authentication | Pluggable token verifiers: local tokens and external JWT issuers (JWKS) in version 1 |
+| D17 | Authentication | Pluggable token verifiers: local tokens and external JWT issuers (JWKS) in version 1. **Amended by ADR-0005:** the external issuer is the enterprise OIDC provider that G1 also trusts, not G1 |
 | D18 | Repository portability | A repository directory holds everything needed to serve it except identities and ACLs; no deduplication across repositories |
 | D19 | Size transparency | No behavior depends on file size; all paths stream with bounded memory |
 | D20 | Prolly tree boundaries | Name-only boundary hash, average 64 entries, min 16, max 512 entries, max 128 KiB per node; interior levels mix the level into the hash |
