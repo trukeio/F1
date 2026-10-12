@@ -33,6 +33,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
 ## Non-goals (version 1)
 
 - Multi-node server clustering and Postgres. Version 1 runs on one node with SQLite.
+- Hosting F1 on Windows. The server and the admin CLI run on Unix systems (Linux, macOS, BSD); the repository lock uses `flock`. Clients (Git, S3 tools, the native client) may run anywhere.
 - S3 or other remote storage as the blob backend. Version 1 stores packs on local disk. The `Backend` interface stays, so a remote backend can be added later.
 - OIDC login. Planned for a later version (see "Identity and authorization").
 - SVN wire protocol. SVN users migrate to the native client, Git, or S3.
@@ -98,7 +99,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
 
 - `f1repo.toml`: the namespace configuration from "Namespace", plus `format = 1` and `uuid`. Human-editable while the repository is detached.
 - `refs`: one line per ref, `<hash-hex> <refname>`, sorted. Replaced atomically on each update: write `refs.tmp`, fsync, rename, fsync directory.
-- `refs.log`: one line per update, `<time> <principal> <refname> <old> <new> <reason>`. Appended and fsynced before `refs` is replaced. Used for audit and for recovery after a crash between the two steps.
+- `refs.log`: one line per ref update, `<time> <tx> <i>/<n> <principal> <refname> <old> <new> <reason>`; a multi-ref update is one group of `n` lines sharing `tx`, written in one write. Appended and fsynced before `refs` is replaced. Used for audit and for recovery after a crash between the two steps: a torn trailing group is removed, and a complete last group not yet in `refs` is applied (ADR-0003).
 - `locks`: same atomic-replace scheme as `refs`. Text, one lock per line. Paths are stored as bytes, so in `locks` and `refs.log` every byte outside printable ASCII, and every space, `%` and newline, is percent-encoded (`%XX`).
 - `lock`: an empty file. The server takes an exclusive `flock` on it when it opens the repository and holds it until detach or shutdown. Offline commands (`fsck --dir`, `rebuild-cache`, offline `archive`) take the same lock and refuse to run if it is held. Not part of the repository state; excluded from archives.
 - `packs/`: as in "Pack store". A pack is complete and readable on its own (footer index plus checksum).
@@ -634,6 +635,8 @@ internal/pack/           pack format, writer, reader
 internal/backend/        Backend interface; fs
 internal/repodir/        repository directory: refs, refs.log, locks files, holds, freeze, archive, import, attach
 internal/cache/          per-repository cache.db (index, digests, git map, uploads); rebuild
+internal/store/          pack store: open pack, sealing, existence check (D9), reads, consolidation
+internal/tree/           prolly tree lookup, iteration, incremental update, diff
 internal/serverdb/       server.db (principals, tokens, S3 keys, ACLs, registry); migrations
 internal/repo/           core operations, group commit, locks, ACL enforcement
 internal/digest/         DigestRecords, digest index, background job

@@ -83,6 +83,32 @@ func (b *FS) Put(ctx context.Context, key string, r io.Reader, size int64) (err 
 	return syncDir(dir)
 }
 
+// PutFile moves the local file src into place under key without copying:
+// src is fsynced, renamed and the target directory fsynced. src must be on
+// the same filesystem as the backend root.
+func (b *FS) PutFile(ctx context.Context, key, src string) error {
+	p, err := b.path(key)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("backend: %w", err)
+	}
+	err = f.Sync()
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("backend: sync %s: %w", src, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return fmt.Errorf("backend: %w", err)
+	}
+	if err := os.Rename(src, p); err != nil {
+		return fmt.Errorf("backend: %w", err)
+	}
+	return syncDir(filepath.Dir(p))
+}
+
 // Get implements Backend.
 func (b *FS) Get(ctx context.Context, key string, off, n int64) (io.ReadCloser, error) {
 	p, err := b.path(key)

@@ -100,6 +100,10 @@ func (w *Writer) Add(rec Record) (bool, error) {
 // Has reports whether the pack being written contains h.
 func (w *Writer) Has(h hash.Hash) bool { return w.seen[h] }
 
+// Flush writes buffered data to the underlying writer, so that records
+// added so far can be read back from it.
+func (w *Writer) Flush() error { return w.w.Flush() }
+
 // Len returns the number of bytes written so far.
 func (w *Writer) Len() uint64 { return w.off }
 
@@ -194,6 +198,22 @@ func (e IndexEntry) check() error {
 		return fmt.Errorf("%w: uncompressed entry %s with stored %d != size %d", ErrCorrupt, e.Hash.Short(), e.Stored, e.Size)
 	}
 	return nil
+}
+
+// ParseRecord parses a record (header and stored payload) from buf, which
+// must hold exactly one record.
+func ParseRecord(buf []byte) (Record, error) {
+	if len(buf) < RecordHeaderSize {
+		return Record{}, fmt.Errorf("%w: short record", ErrCorrupt)
+	}
+	e := parseRecordHeader(buf)
+	if err := e.check(); err != nil {
+		return Record{}, err
+	}
+	if len(buf) != RecordHeaderSize+int(e.Stored) {
+		return Record{}, fmt.Errorf("%w: record length mismatch", ErrCorrupt)
+	}
+	return Record{Type: e.Type, Hash: e.Hash, Flags: e.Flags, Size: e.Size, Data: buf[RecordHeaderSize:]}, nil
 }
 
 // Reader reads a pack through random access.

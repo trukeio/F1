@@ -10,8 +10,11 @@ all: build
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/f1d ./cmd/f1d
 
+# The race pass scales down large single-goroutine tests; the second pass
+# runs them at full size.
 test:
 	go test -race ./...
+	go test ./...
 
 vet:
 	go vet ./...

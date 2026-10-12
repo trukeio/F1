@@ -164,6 +164,19 @@ func (e *Entry) validate() error {
 	return nil
 }
 
+// EntrySize returns the length of an entry's CBOR encoding, the measure
+// used by the NodeMaxBytes rule.
+func EntrySize(e *Entry) (int, error) {
+	b, err := encMode.Marshal(e)
+	return len(b), err
+}
+
+// ChildSize returns the length of a child's CBOR encoding.
+func ChildSize(c *Child) (int, error) {
+	b, err := encMode.Marshal(c)
+	return len(b), err
+}
+
 // LeafBoundary reports whether a leaf node may end after an entry with this
 // name: BLAKE3(name)[0] & 0x3F == 0.
 func LeafBoundary(name []byte) bool {
@@ -215,11 +228,11 @@ func BuildTree(entries []Entry, put func(*TreeNode) (hash.Hash, error)) (hash.Ha
 	}
 	sizes := make([]int, len(entries))
 	for i := range entries {
-		b, err := encMode.Marshal(&entries[i])
+		n, err := EntrySize(&entries[i])
 		if err != nil {
 			return hash.Zero, err
 		}
-		sizes[i] = len(b)
+		sizes[i] = n
 	}
 	counts := SplitLevel(len(entries),
 		func(i int) bool { return LeafBoundary(entries[i].Name) },
@@ -241,11 +254,11 @@ func BuildTree(entries []Entry, put func(*TreeNode) (hash.Hash, error)) (hash.Ha
 		}
 		sizes := make([]int, len(children))
 		for i := range children {
-			b, err := encMode.Marshal(&children[i])
+			n, err := ChildSize(&children[i])
 			if err != nil {
 				return hash.Zero, err
 			}
-			sizes[i] = len(b)
+			sizes[i] = n
 		}
 		counts := SplitLevel(len(children),
 			func(i int) bool { return InteriorBoundary(level, children[i].FirstName) },

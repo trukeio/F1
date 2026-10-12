@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -51,6 +52,11 @@ func TestRunStartsAndStops(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("server did not stop")
+	}
+	for _, name := range []string{ServerDB, ReposDir} {
+		if _, err := os.Stat(filepath.Join(cfg.Server.DataDir, name)); err != nil {
+			t.Errorf("%s not created: %v", name, err)
+		}
 	}
 }
 

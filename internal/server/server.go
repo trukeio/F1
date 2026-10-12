@@ -8,9 +8,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/trukeio/f1/internal/config"
+	"github.com/trukeio/f1/internal/serverdb"
+)
+
+// Names inside the data directory.
+const (
+	ServerDB = "server.db"
+	ReposDir = "repos"
 )
 
 // ShutdownTimeout bounds how long Run waits for in-flight requests after
@@ -24,6 +33,14 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(ad
 	if err := cfg.EnsureDataDir(); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(cfg.Server.DataDir, ReposDir), 0o700); err != nil {
+		return fmt.Errorf("data directory: %w", err)
+	}
+	db, err := serverdb.Open(ctx, filepath.Join(cfg.Server.DataDir, ServerDB))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
 
 	ln, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
