@@ -124,8 +124,11 @@ func Ingest(ctx context.Context, store Store, r io.Reader, sizeHint int64, opts 
 		cancel(err)
 	}
 	wg.Wait()
-	if err == nil {
-		err = context.Cause(ctx)
+	// Every failure cancels the pipeline with its error as the cause (the
+	// first one wins), so the cause is the error to report; other stages
+	// may only have seen the cancellation.
+	if cause := context.Cause(ctx); cause != nil {
+		err = cause
 	}
 	if err != nil {
 		return Result{}, err
@@ -209,8 +212,13 @@ type pipeline struct {
 	order chan *job   // to the writer, in file order
 }
 
-// release returns a job's chunk buffer to the pool when its last user is
-// done.
+// release returns a job's chunk buffer to the pool when its last user (the
+// worker, each digester and the writer) is done. Because the writer is one
+// of the users, a chunk buffer stays taken until its job is fully written,
+// so the buffer pool bounds every in-flight job, including jobs holding a
+// record buffer from p.dsts. Without that bound, finished jobs waiting for
+// the writer could hold every record buffer while the job the writer waits
+// for still needs one.
 func (p *pipeline) release(j *job) {
 	if j.refs.Add(-1) == 0 {
 		p.bufs <- j.data[:cap(j.data)]
@@ -246,7 +254,7 @@ func (p *pipeline) produce(r io.Reader, digesters []*digester, total *atomic.Uin
 			return
 		}
 		j := &job{data: buf[:copy(buf, b)], done: make(chan struct{})}
-		j.refs.Store(int32(1 + len(digesters)))
+		j.refs.Store(int32(2 + len(digesters))) // worker, writer, digesters
 		if !send(p.ctx, p.order, j) || !send(p.ctx, p.jobs, j) {
 			return
 		}
@@ -327,6 +335,7 @@ func (p *pipeline) write() (Result, error) {
 		if j.rec.Data != nil {
 			p.dsts <- j.rec.Data[:0]
 		}
+		p.release(j)
 		res.Chunks++
 		res.Size += size
 		if err := builder.Add(object.Ref{Hash: j.hash, Size: size}); err != nil {
