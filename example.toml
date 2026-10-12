@@ -1,0 +1,12 @@
+# Example f1d configuration. Start with: f1d serve --config example.toml
+
+[server]
+# Holds server.db and repos/. Relative paths are resolved against the
+# directory of this file.
+data_dir = "data"
+# Main listener: native API and Git smart HTTP.
+listen = "127.0.0.1:8080"
+
+[log]
+level  = "info"   # debug | info | warn | error
+format = "text"   # text | json
