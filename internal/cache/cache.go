@@ -19,10 +19,10 @@ import (
 	"github.com/trukeio/f1/internal/pack"
 )
 
-// SchemaVersion is stored in PRAGMA user_version. A cache of version 1 is
-// upgraded in place; a cache with any other version is discarded and
+// SchemaVersion is stored in PRAGMA user_version. Caches of versions 1 and
+// 2 are upgraded in place; a cache with any other version is discarded and
 // rebuilt.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // ErrSchema is returned by Open for a cache with another schema version.
 var ErrSchema = errors.New("cache: schema version mismatch")
@@ -56,7 +56,20 @@ CREATE TABLE pending_deletes (
 	name  TEXT PRIMARY KEY,
 	after INTEGER NOT NULL
 );
-` + uploadsSchema
+` + uploadsSchema + gitMapSchema
+
+// gitMapSchema maps F1 objects to the Git objects they export as (version
+// 3). Blobs are not in it: their Git ids are in digests. Export is
+// deterministic, so the table is recomputed on demand after a rebuild.
+const gitMapSchema = `
+CREATE TABLE git_map (
+	f1   BLOB NOT NULL,
+	kind INTEGER NOT NULL,            -- 1 commit, 2 tree, 3 tag, 4 GitRaw tree bytes
+	sha1 BLOB NOT NULL,
+	PRIMARY KEY (f1, kind)
+) WITHOUT ROWID;
+CREATE INDEX git_map_sha1 ON git_map(sha1);
+`
 
 // uploadsSchema holds open S3 multipart uploads (version 2). Upload state
 // is the one thing in cache.db that packs cannot restore: after a rebuild,
@@ -131,8 +144,12 @@ func (c *DB) init() error {
 		if _, err := c.db.Exec(schema + fmt.Sprintf("PRAGMA user_version = %d;", SchemaVersion)); err != nil {
 			return fmt.Errorf("cache: create schema: %w", err)
 		}
-	case 1:
-		if _, err := c.db.Exec(uploadsSchema + fmt.Sprintf("PRAGMA user_version = %d;", SchemaVersion)); err != nil {
+	case 1, 2:
+		upgrade := gitMapSchema
+		if version == 1 {
+			upgrade = uploadsSchema + upgrade
+		}
+		if _, err := c.db.Exec(upgrade + fmt.Sprintf("PRAGMA user_version = %d;", SchemaVersion)); err != nil {
 			return fmt.Errorf("cache: upgrade schema: %w", err)
 		}
 	case SchemaVersion:

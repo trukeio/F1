@@ -1,11 +1,15 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 
 	"github.com/trukeio/f1/internal/content"
 	"github.com/trukeio/f1/internal/hash"
+	"github.com/trukeio/f1/internal/object"
 )
 
 // Concat stores a File that is the concatenation of files without copying
@@ -69,4 +73,35 @@ func (r *Repo) DigestLater(file hash.Hash) {
 			r.log.Warn("background digest failed", "file", file.Short(), "err", err)
 		}
 	}()
+}
+
+// Put stores an object (a commit, tag or GitRaw built by a protocol layer,
+// such as the Git importer) and returns its hash. Every object it
+// references must be stored (D9).
+func (r *Repo) Put(ctx context.Context, o object.Object) (hash.Hash, error) {
+	end, err := r.beginWrite()
+	if err != nil {
+		return hash.Zero, err
+	}
+	defer end()
+	return r.putObject(ctx, o)
+}
+
+// PutTree stores a tree with the given entries (unsorted; names must be
+// unique) and returns its root hash. Entries of dir kind point to stored
+// trees.
+func (r *Repo) PutTree(ctx context.Context, entries []object.Entry) (hash.Hash, error) {
+	end, err := r.beginWrite()
+	if err != nil {
+		return hash.Zero, err
+	}
+	defer end()
+	sorted := slices.Clone(entries)
+	slices.SortFunc(sorted, func(a, b object.Entry) int { return bytes.Compare(a.Name, b.Name) })
+	for i := 1; i < len(sorted); i++ {
+		if bytes.Equal(sorted[i-1].Name, sorted[i].Name) {
+			return hash.Zero, fmt.Errorf("%w: duplicate name %q", ErrInvalidPath, sorted[i].Name)
+		}
+	}
+	return object.BuildTree(sorted, func(n *object.TreeNode) (hash.Hash, error) { return r.putObject(ctx, n) })
 }

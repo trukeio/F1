@@ -3,12 +3,14 @@ package test
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,6 +104,7 @@ func startSubprocess(t *testing.T) *subprocessServer {
 	}
 	runCLI(t, bin, "acl", "set", "--config", cfg, "*", "user:admin", "", "admin")
 	runCLI(t, bin, "ns", "create", "--config", cfg, "sizes")
+	runCLI(t, bin, "ns", "create", "--config", cfg, "--preset", "git", "sizes-git")
 
 	cmd := exec.Command(bin, "serve", "--config", cfg)
 	cmd.Stderr = os.Stderr
@@ -262,4 +265,41 @@ func checkMemory(t *testing.T, s *subprocessServer, clientPeak *atomic.Uint64) {
 	if clientPeak.Load() > memoryBound {
 		t.Errorf("client peak heap %d MiB exceeds %d MiB", clientPeak.Load()>>20, memoryBound>>20)
 	}
+}
+
+// Size transparency (D19) over Git: files of every size written through the
+// native API clone with the right blob ids, with bounded server memory.
+func TestSizeTransparencyGit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs f1d")
+	}
+	requireGit(t)
+	s := startSubprocess(t)
+	c := f1client.New(s.url, s.token)
+	parent := "new"
+	want := map[string]string{} // path → Git blob id
+	for _, n := range testSizes() {
+		seed := fmt.Sprint("git size ", n)
+		path := fmt.Sprintf("sizes/%d.bin", n)
+		h := sha1.New()
+		h.Write([]byte(fmt.Sprintf("blob %d\x00", n)))
+		res, err := c.Put(ctx, "sizes-git", "main", path, io.TeeReader(io.LimitReader(testutil.Reader(seed), n), h), n, &f1client.PutOptions{Parent: parent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent = res.Commit
+		want[path] = hex.EncodeToString(h.Sum(nil))
+	}
+	u, _ := url.Parse(s.url)
+	u.User = url.UserPassword("admin", s.token)
+	u.Path = "/git/sizes-git.git"
+	dst := filepath.Join(t.TempDir(), "clone")
+	gitCmd(t, "", nil, "clone", "-q", "--bare", u.String(), dst)
+	for path, id := range want {
+		if got := strings.TrimSpace(gitCmd(t, dst, nil, "rev-parse", "HEAD:"+path)); got != id {
+			t.Fatalf("%s: blob %s, want %s", path, got, id)
+		}
+	}
+	gitCmd(t, dst, nil, "fsck", "--no-dangling")
+	checkMemory(t, s, sampleHeap(t))
 }

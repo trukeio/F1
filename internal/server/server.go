@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/trukeio/f1/internal/api/git"
 	"github.com/trukeio/f1/internal/api/native"
 	"github.com/trukeio/f1/internal/api/s3"
 	"github.com/trukeio/f1/internal/auth"
@@ -102,7 +103,8 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(Ad
 			ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 		}
 	}
-	srv := newServer(newMux(nativeAPI.Handler()))
+	gitAPI := &git.Server{Repos: mgr, Auth: chain, ACL: acl, Log: log}
+	srv := newServer(newMux(nativeAPI.Handler(), gitAPI))
 	admin := newServer(adminHandler(mgr, log))
 	servers := []*http.Server{srv, admin}
 
@@ -166,9 +168,10 @@ func addrString(a net.Addr) string {
 	return a.String()
 }
 
-func newMux(nativeAPI http.Handler) *http.ServeMux {
+func newMux(nativeAPI, gitAPI http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", nativeAPI)
+	mux.Handle(git.Prefix, gitAPI)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))

@@ -474,7 +474,7 @@ S3 XML error bodies with standard codes: `NoSuchBucket`, `NoSuchKey`, `NoSuchUpl
 
 ## Git compatibility
 
-Served under `/git/{namespace}.git` on the main listener. Authentication: HTTP Basic with username and token as password.
+Served under `/git/{namespace}.git` on the main listener. Authentication: HTTP Basic with username and token as password. Implementation decisions for fetch (own pack writer and pkt-line code, negotiation, on-demand `git_map`) are in ADR-0008.
 
 ### Protocol scope
 
@@ -486,7 +486,7 @@ Served under `/git/{namespace}.git` on the main listener. Authentication: HTTP B
 
 ### Object mapping
 
-Table `git_map(f1_hash, git_sha1, kind)` in `cache.db`, with indexes in both directions. Export is deterministic, so the table is rebuildable by re-exporting from the refs. Blob SHA-1s come from DigestRecords (D21), so the rebuild reads only tree, commit and tag objects, never file content. It runs in the background after a cache rebuild; fetches compute missing entries on demand at the same cost. Many F1 hashes may map to one Git SHA-1 (trees differing only in S3 attrs).
+Table `git_map(f1_hash, git_sha1, kind)` in `cache.db`, with indexes in both directions. Export is deterministic, so the table is rebuildable by re-exporting from the refs. Blob SHA-1s come from DigestRecords (D21), so the rebuild reads only tree, commit and tag objects, never file content. Version 1 computes missing entries on demand during fetches and memoizes them (ADR-0008); a background rebuild can be added later. Many F1 hashes may map to one Git SHA-1 (trees differing only in S3 attrs).
 
 **Export (F1 → Git)**, computed lazily during fetch and memoized:
 - File entry → Git blob. SHA-1 from the DigestRecord (`sha1git`).
@@ -665,6 +665,7 @@ internal/gc/             garbage collection, fsck
 internal/auth/           principals, verifiers (local, JWT/JWKS), SigV4
 internal/api/native/     native HTTP API
 internal/oidctest/       in-process OIDC provider for tests
+internal/gittest/        test-only importer of Git repositories (uses the production Git importer)
 internal/api/s3/         S3 API (SigV4 verification is in internal/auth)
 internal/api/git/        Git smart HTTP, pack export/import, object mapping
 internal/api/lfs/        Git LFS batch and locking API
@@ -686,7 +687,7 @@ testdata/                golden vectors, Git fixture repositories
 | SQLite | `modernc.org/sqlite` |
 | S3 client for tests only | `github.com/aws/aws-sdk-go-v2` (service/s3), imported only from `_test.go` files and `test/` |
 | JWT and JWKS | `github.com/go-jose/go-jose/v4` |
-| Git pack and pkt-line parsing | `github.com/go-git/go-git/v5/plumbing/...` (format packages only; F1 implements the server logic) |
+| Git pack and pkt-line parsing | F1's own code for fetch (ADR-0008); `github.com/go-git/go-git/v5/plumbing/...` for pack parsing with deltas only if phase 6 needs it |
 | SHA-1 with collision detection (Git import) | `github.com/pjbgf/sha1cd` (already a go-git dependency) |
 | TOML | `github.com/BurntSushi/toml` |
 | ULID | `github.com/oklog/ulid/v2` |

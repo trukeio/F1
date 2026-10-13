@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ type env struct {
 	url     string
 	s3url   string
 	s3keys  map[string]serverdb.S3Key // per user name
+	tokens  map[string]string         // native tokens per user name
 	admin   *f1client.Client          // user:admin, server administrator
 	alice   *f1client.Client          // user:alice, in group:eng
 	bob     *f1client.Client          // user:bob, no groups
@@ -36,20 +38,28 @@ type env struct {
 type envOpts struct {
 	oidc    []auth.OIDCConfig
 	aliases map[string][2]string // S3 bucket alias → namespace, ref
+	dataDir string               // reuse a data directory (users and keys are created once)
+	setup   func(dataDir string) // runs before the server starts
 }
 
 func start(t *testing.T, opts envOpts) *env {
 	t.Helper()
-	dataDir := t.TempDir()
+	dataDir := opts.dataDir
+	fresh := dataDir == ""
+	if fresh {
+		dataDir = t.TempDir()
+	}
 	db, err := serverdb.Open(ctx, filepath.Join(dataDir, server.ServerDB))
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{dataDir: dataDir, db: db, s3keys: map[string]serverdb.S3Key{}}
-	tokens := map[string]string{}
+	e := &env{dataDir: dataDir, db: db, s3keys: map[string]serverdb.S3Key{}, tokens: map[string]string{}}
+	tokens := e.tokens
 	for user, groups := range map[string][]string{"admin": nil, "alice": {"group:eng"}, "bob": nil} {
-		if err := db.AddUser(ctx, "user:"+user, groups); err != nil {
-			t.Fatal(err)
+		if fresh {
+			if err := db.AddUser(ctx, "user:"+user, groups); err != nil {
+				t.Fatal(err)
+			}
 		}
 		_, tok, err := db.CreateToken(ctx, "user:"+user, "test", 0)
 		if err != nil {
@@ -62,7 +72,12 @@ func start(t *testing.T, opts envOpts) *env {
 		}
 		e.s3keys[user] = k
 	}
-	e.setACL(t, serverdb.ServerNamespace, "user:admin", "", "admin")
+	if fresh {
+		e.setACL(t, serverdb.ServerNamespace, "user:admin", "", "admin")
+	}
+	if opts.setup != nil {
+		opts.setup(dataDir)
+	}
 
 	cfg := config.Default()
 	cfg.Server.DataDir = dataDir
@@ -86,12 +101,15 @@ func start(t *testing.T, opts envOpts) *env {
 	case <-time.After(10 * time.Second):
 		t.Fatal("server did not start")
 	}
+	var once sync.Once
 	e.stop = func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("server: %v", err)
-		}
-		db.Close()
+		once.Do(func() {
+			cancel()
+			if err := <-done; err != nil {
+				t.Errorf("server: %v", err)
+			}
+			db.Close()
+		})
 	}
 	t.Cleanup(e.stop)
 	e.admin = f1client.New(e.url, tokens["admin"])
