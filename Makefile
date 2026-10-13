@@ -34,6 +34,8 @@ bench:
 fuzz:
 	go test ./internal/object -run '^$$' -fuzz FuzzDecode -fuzztime $(FUZZTIME)
 	go test ./internal/pack -run '^$$' -fuzz FuzzPack -fuzztime $(FUZZTIME)
+	go test ./internal/auth -run '^$$' -fuzz FuzzSigV4 -fuzztime $(FUZZTIME)
+	go test ./internal/api/s3 -run '^$$' -fuzz FuzzChunked -fuzztime $(FUZZTIME)
 
 ci: fmt-check vet staticcheck test smoke
 

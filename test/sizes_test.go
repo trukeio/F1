@@ -61,9 +61,12 @@ func TestMain(m *testing.M) {
 // subprocessServer bootstraps a data directory with the f1d CLI and runs
 // "f1d serve" in a subprocess, so that its peak memory can be measured.
 type subprocessServer struct {
-	cmd   *exec.Cmd
-	url   string
-	token string
+	cmd      *exec.Cmd
+	url      string
+	token    string
+	s3url    string
+	s3key    string
+	s3secret string
 }
 
 func runCLI(t *testing.T, bin string, args ...string) string {
@@ -83,16 +86,20 @@ func startSubprocess(t *testing.T) *subprocessServer {
 	t.Helper()
 	bin := f1dBinary(t)
 	dir := t.TempDir()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
+	addr, s3addr := freeAddr(t), freeAddr(t)
 	cfg := filepath.Join(dir, "f1d.toml")
-	os.WriteFile(cfg, []byte(fmt.Sprintf("[server]\ndata_dir = \"data\"\nlisten = %q\n[log]\nlevel = \"warn\"\n", addr)), 0o600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf("[server]\ndata_dir = \"data\"\nlisten = %q\n[server.s3]\nlisten = %q\n[log]\nlevel = \"warn\"\n", addr, s3addr)), 0o600)
 	runCLI(t, bin, "user", "add", "--config", cfg, "admin")
 	token := strings.TrimSpace(runCLI(t, bin, "token", "create", "--config", cfg, "admin"))
+	var key, secret string
+	for _, line := range strings.Split(runCLI(t, bin, "s3key", "create", "--config", cfg, "admin"), "\n") {
+		if v, ok := strings.CutPrefix(line, "access_key = "); ok {
+			key = v
+		}
+		if v, ok := strings.CutPrefix(line, "secret_key = "); ok {
+			secret = v
+		}
+	}
 	runCLI(t, bin, "acl", "set", "--config", cfg, "*", "user:admin", "", "admin")
 	runCLI(t, bin, "ns", "create", "--config", cfg, "sizes")
 
@@ -101,7 +108,7 @@ func startSubprocess(t *testing.T) *subprocessServer {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	s := &subprocessServer{cmd: cmd, url: "http://" + addr, token: token}
+	s := &subprocessServer{cmd: cmd, url: "http://" + addr, token: token, s3url: "http://" + s3addr, s3key: key, s3secret: secret}
 	t.Cleanup(func() {
 		cmd.Process.Signal(os.Interrupt)
 		cmd.Wait()
@@ -117,6 +124,17 @@ func startSubprocess(t *testing.T) *subprocessServer {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// freeAddr returns a free local TCP address.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().String()
 }
 
 // peakRSS returns the peak resident set size of a process (Linux).
@@ -147,34 +165,12 @@ func TestSizeTransparencyNative(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs f1d")
 	}
-	sizes := []int64{0, 1, 16<<10 - 1, 16 << 10, 256<<10 + 1, 64<<20 + 1}
-	if os.Getenv("F1_TEST_LARGE") != "" {
-		sizes = append(sizes, 1<<30, 10<<30)
-	}
 	s := startSubprocess(t)
 	c := f1client.New(s.url, s.token)
-
-	// Sample the client's heap during the transfers.
-	var clientPeak atomic.Uint64
-	done := make(chan struct{})
-	go func() {
-		var ms runtime.MemStats
-		for {
-			runtime.ReadMemStats(&ms)
-			if ms.HeapInuse > clientPeak.Load() {
-				clientPeak.Store(ms.HeapInuse)
-			}
-			select {
-			case <-done:
-				return
-			case <-time.After(20 * time.Millisecond):
-			}
-		}
-	}()
-	defer close(done)
+	clientPeak := sampleHeap(t)
 
 	parent := "new"
-	for _, n := range sizes {
+	for _, n := range testSizes() {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			seed := fmt.Sprint("size ", n)
 			path := fmt.Sprintf("sizes/%d.bin", n)
@@ -219,6 +215,44 @@ func TestSizeTransparencyNative(t *testing.T) {
 			}
 		})
 	}
+	checkMemory(t, s, clientPeak)
+}
+
+// testSizes are the file sizes of the size transparency suite (D19).
+func testSizes() []int64 {
+	sizes := []int64{0, 1, 16<<10 - 1, 16 << 10, 256<<10 + 1, 64<<20 + 1}
+	if os.Getenv("F1_TEST_LARGE") != "" {
+		sizes = append(sizes, 1<<30, 10<<30)
+	}
+	return sizes
+}
+
+// sampleHeap records the test process's peak heap until the test ends.
+func sampleHeap(t *testing.T) *atomic.Uint64 {
+	var peak atomic.Uint64
+	done := make(chan struct{})
+	go func() {
+		var ms runtime.MemStats
+		for {
+			runtime.ReadMemStats(&ms)
+			if ms.HeapInuse > peak.Load() {
+				peak.Store(ms.HeapInuse)
+			}
+			select {
+			case <-done:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+	t.Cleanup(func() { close(done) })
+	return &peak
+}
+
+// checkMemory checks the server's peak RSS and the client's peak heap
+// against the bound.
+func checkMemory(t *testing.T, s *subprocessServer, clientPeak *atomic.Uint64) {
+	t.Helper()
 	if rss, ok := peakRSS(s.cmd.Process.Pid); ok {
 		t.Logf("server peak RSS %d MiB, client peak heap %d MiB", rss>>20, clientPeak.Load()>>20)
 		if rss > memoryBound {

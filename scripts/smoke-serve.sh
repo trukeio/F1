@@ -9,8 +9,16 @@ bin=$(realpath "$1")
 work=$(mktemp -d)
 trap 'kill "$pid" 2>/dev/null || true; rm -rf "$work"' EXIT
 
-port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-sed "s/^listen = .*/listen = \"127.0.0.1:$port\"/" example.toml > "$work/f1d.toml"
+free_port() {
+	python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'
+}
+port=$(free_port)
+s3port=$(free_port)
+# The first "listen" is the main listener, the second the S3 listener.
+awk -v main="$port" -v s3="$s3port" '
+	/^listen = / { n++; print "listen = \"127.0.0.1:" (n == 1 ? main : s3) "\""; next }
+	{ print }
+' example.toml > "$work/f1d.toml"
 
 "$bin" serve --config "$work/f1d.toml" 2> "$work/log" &
 pid=$!
@@ -22,6 +30,8 @@ for _ in $(seq 50); do
 	sleep 0.1
 done
 curl -fsS "http://127.0.0.1:$port/healthz"
+# The S3 listener answers (unauthenticated requests are refused).
+test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$s3port/")" = 403
 
 kill -TERM "$pid"
 status=0

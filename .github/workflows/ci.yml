@@ -17,3 +17,31 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make ci
+
+  # External S3 clients (doc/plan.md, phase 4): AWS CLI, rclone, mc.
+  s3tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: test/s3tools/install.sh "$RUNNER_TEMP/s3tools"
+      - run: PATH="$RUNNER_TEMP/s3tools/bin:$PATH" F1_REQUIRE_S3TOOLS=1 go test ./test -run TestS3Tools -v
+
+  # The selected Ceph s3-tests (test/s3tests.txt).
+  s3tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: |
+          git clone -q https://github.com/ceph/s3-tests.git "$RUNNER_TEMP/s3-tests"
+          git -C "$RUNNER_TEMP/s3-tests" checkout -q "$(sed -n 's/^S3TESTS_COMMIT=//p' test/s3tests.sh)"
+          pip install -q -r test/s3tests-requirements.txt
+      - run: make build && test/s3tests.sh bin/f1d "$RUNNER_TEMP/s3-tests" --timeout=120

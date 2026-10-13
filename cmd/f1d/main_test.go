@@ -97,7 +97,7 @@ func runFail(t *testing.T, want string, args ...string) {
 func TestRepoCommands(t *testing.T) {
 	data := t.TempDir()
 	cfg := filepath.Join(data, "f1d.toml")
-	if err := os.WriteFile(cfg, []byte("[server]\ndata_dir = \".\"\nlisten = \"127.0.0.1:0\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte("[server]\ndata_dir = \".\"\nlisten = \"127.0.0.1:0\"\n[server.s3]\nlisten = \"127.0.0.1:0\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Create(filepath.Join(data, "repos", "ns"), policy.Default()); err != nil {

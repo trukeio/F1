@@ -6,7 +6,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,15 +24,18 @@ var ctx = context.Background()
 type env struct {
 	dataDir string
 	url     string
-	admin   *f1client.Client // user:admin, server administrator
-	alice   *f1client.Client // user:alice, in group:eng
-	bob     *f1client.Client // user:bob, no groups
-	db      *serverdb.DB     // a second handle on server.db, for ACL setup
+	s3url   string
+	s3keys  map[string]serverdb.S3Key // per user name
+	admin   *f1client.Client          // user:admin, server administrator
+	alice   *f1client.Client          // user:alice, in group:eng
+	bob     *f1client.Client          // user:bob, no groups
+	db      *serverdb.DB              // a second handle on server.db, for ACL setup
 	stop    func()
 }
 
 type envOpts struct {
-	oidc []auth.OIDCConfig
+	oidc    []auth.OIDCConfig
+	aliases map[string][2]string // S3 bucket alias → namespace, ref
 }
 
 func start(t *testing.T, opts envOpts) *env {
@@ -43,7 +45,7 @@ func start(t *testing.T, opts envOpts) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{dataDir: dataDir, db: db}
+	e := &env{dataDir: dataDir, db: db, s3keys: map[string]serverdb.S3Key{}}
 	tokens := map[string]string{}
 	for user, groups := range map[string][]string{"admin": nil, "alice": {"group:eng"}, "bob": nil} {
 		if err := db.AddUser(ctx, "user:"+user, groups); err != nil {
@@ -54,21 +56,31 @@ func start(t *testing.T, opts envOpts) *env {
 			t.Fatal(err)
 		}
 		tokens[user] = tok
+		k, err := db.CreateS3Key(ctx, "user:"+user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.s3keys[user] = k
 	}
 	e.setACL(t, serverdb.ServerNamespace, "user:admin", "", "admin")
 
 	cfg := config.Default()
 	cfg.Server.DataDir = dataDir
 	cfg.Server.Listen = "127.0.0.1:0"
+	cfg.Server.S3.Listen = "127.0.0.1:0"
 	cfg.Auth.OIDC = opts.oidc
+	for b, a := range opts.aliases {
+		cfg.Server.S3.Aliases = append(cfg.Server.S3.Aliases, config.S3Alias{Bucket: b, Namespace: a[0], Ref: a[1]})
+	}
 	runCtx, cancel := context.WithCancel(ctx)
-	addr := make(chan net.Addr, 1)
+	addr := make(chan server.Addrs, 1)
 	done := make(chan error, 1)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go func() { done <- server.Run(runCtx, cfg, log, func(a net.Addr) { addr <- a }) }()
+	go func() { done <- server.Run(runCtx, cfg, log, func(a server.Addrs) { addr <- a }) }()
 	select {
 	case a := <-addr:
-		e.url = "http://" + a.String()
+		e.url = "http://" + a.Main.String()
+		e.s3url = "http://" + a.S3.String()
 	case err := <-done:
 		t.Fatalf("server: %v", err)
 	case <-time.After(10 * time.Second):

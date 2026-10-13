@@ -252,6 +252,30 @@ func DetachOffline(ctx context.Context, db *serverdb.DB, reposDir, ns string) er
 	return db.Unregister(ctx, ns)
 }
 
+// DeletedPrefix starts the names of deleted repository directories in
+// repos/; the manager ignores them (names starting with "." are never
+// namespaces).
+const DeletedPrefix = ".deleted-"
+
+// Delete detaches a namespace and moves its directory aside to
+// repos/.deleted-<ns>-<suffix>, so that its name can be reused. Nothing is
+// erased: the operator removes the directory, or restores it with a rename
+// and f1d repo attach (S3 DeleteBucket, which only deletes empty buckets).
+func (m *Manager) Delete(ctx context.Context, ns string) error {
+	if err := m.Detach(ctx, ns); err != nil {
+		return err
+	}
+	to := filepath.Join(m.reposDir, DeletedPrefix+ns+"-"+randomSuffix())
+	if err := os.Rename(m.dir(ns), to); err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
+	if err := repodir.SyncDir(m.reposDir); err != nil {
+		return err
+	}
+	m.log.Info("repository deleted", "namespace", ns, "moved_to", to)
+	return nil
+}
+
 // Freeze freezes a repository for copying.
 func (m *Manager) Freeze(ctx context.Context, ns string) error {
 	r, err := m.Get(ns)

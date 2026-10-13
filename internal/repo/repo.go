@@ -64,10 +64,12 @@ type Repo struct {
 
 	groupMu sync.Mutex
 	groups  map[string]*committer
-	stop    context.CancelFunc
-	stopCtx context.Context
-	wg      sync.WaitGroup
-	closed  bool
+
+	digestSem chan struct{} // background digest jobs (one at a time)
+	stop      context.CancelFunc
+	stopCtx   context.Context
+	wg        sync.WaitGroup
+	closed    bool
 }
 
 // OpenReport describes the recovery steps Open performed.
@@ -126,7 +128,7 @@ func Open(ctx context.Context, path string, opts Options) (*Repo, OpenReport, er
 	r := &Repo{
 		dir: dir, meta: dir.Meta(), store: st, log: opts.Logger, opts: opts,
 		nodes: tree.NewNodes(st, opts.NodeCache),
-		refs:  refs, groups: map[string]*committer{},
+		refs:  refs, groups: map[string]*committer{}, digestSem: make(chan struct{}, 1),
 		stop: stop, stopCtx: stopCtx,
 	}
 	r.gateCond = sync.NewCond(&r.gateMu)

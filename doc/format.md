@@ -137,16 +137,21 @@ Entry kinds:
 | Key | Type | Meaning | Allowed on |
 |---|---|---|---|
 | `ct` | tstr | S3 content type | any |
-| `meta` | map tstr → tstr | S3 user metadata | any |
-| `etag` | tstr | S3 ETag | any |
+| `meta` | map tstr → tstr | S3 user metadata, and stored standard headers (below) | any |
+| `etag` | tstr | S3 ETag, without quotes | any |
 | `mtime` | int | write time, Unix ns | any |
-| `cks` | map tstr → bstr | S3 checksums by algorithm | any |
+| `cks` | map tstr → bstr | S3 checksums sent by the client (below) | any |
 | `exec` | true | executable LFS file | lfs |
 | `git_sha1` | bstr(20) | submodule commit | gitlink (required) |
 | `lfs_pointer` | bstr | exact LFS pointer bytes | lfs (required) |
 | `git_raw` | bstr(32) | hash of a GitRaw with the exact Git tree | dir |
 
 Unknown keys are invalid in format version 1.
+
+Conventions inside the S3 attributes (ADR-0007); they use the types above and do not change the encoding:
+
+- `meta` keys are the lower-case names after `x-amz-meta-`. A key starting with `:` holds a standard header kept with the object: `:cache-control`, `:content-disposition`, `:content-encoding`, `:content-language`, `:expires`. No `x-amz-meta-` header can produce such a name.
+- `cks` keys are checksum algorithms: `crc32`, `crc32c`, `crc64nvme`, `sha1`, `sha256`. A key `<algorithm>` holds a full-object checksum (big-endian CRC, or the hash). A key `<algorithm>-<n>` holds the composite checksum of a multipart upload with `n` parts: the algorithm over the concatenated part checksums.
 
 **Node boundaries (D20).** Each level is built left to right from its items (entries at level 0, children above). An item is added to the current node, and the node ends after it when:
 

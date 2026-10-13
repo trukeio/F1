@@ -71,13 +71,20 @@ func TestArchiveUnderNativeLoad(t *testing.T) {
 		t.Fatalf("archive by a non-admin: %v", err)
 	}
 
-	zr, err := zip.NewReader(bytes.NewReader(archive.Bytes()), int64(archive.Len()))
+	checkArchive(t, "bucket", archive.Bytes())
+}
+
+// checkArchive imports a repository archive and checks that it passes fsck
+// and has exactly the refs recorded in the archive.
+func checkArchive(t *testing.T, ns string, archive []byte) {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var archivedRefs string
 	for _, f := range zr.File {
-		if f.Name == "bucket/refs" {
+		if f.Name == ns+"/refs" {
 			rc, _ := f.Open()
 			b, _ := io.ReadAll(rc)
 			rc.Close()
@@ -87,8 +94,8 @@ func TestArchiveUnderNativeLoad(t *testing.T) {
 	if archivedRefs == "" {
 		t.Fatal("archive has no refs")
 	}
-	zipPath := filepath.Join(t.TempDir(), "bucket.zip")
-	if err := os.WriteFile(zipPath, archive.Bytes(), 0o600); err != nil {
+	zipPath := filepath.Join(t.TempDir(), ns+".zip")
+	if err := os.WriteFile(zipPath, archive, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reposDir := filepath.Join(t.TempDir(), "repos")
@@ -99,7 +106,7 @@ func TestArchiveUnderNativeLoad(t *testing.T) {
 	if !res.Fsck.Clean() {
 		t.Fatalf("fsck: %v", res.Fsck.Findings)
 	}
-	r, _, err := repo.Open(ctx, filepath.Join(reposDir, "bucket"), repo.Options{})
+	r, _, err := repo.Open(ctx, filepath.Join(reposDir, ns), repo.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

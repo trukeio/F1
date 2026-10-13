@@ -18,12 +18,13 @@ func TestRunStartsAndStops(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.DataDir = filepath.Join(t.TempDir(), "data")
 	cfg.Server.Listen = "127.0.0.1:0"
+	cfg.Server.S3.Listen = "127.0.0.1:0"
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	addrc := make(chan net.Addr, 1)
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, cfg, log, func(a net.Addr) { addrc <- a }) }()
+	go func() { done <- Run(ctx, cfg, log, func(a Addrs) { addrc <- a.Main }) }()
 
 	var addr net.Addr
 	select {
@@ -70,6 +71,7 @@ func TestRunListenError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.DataDir = t.TempDir()
 	cfg.Server.Listen = ln.Addr().String()
+	cfg.Server.S3.Listen = ""
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := Run(context.Background(), cfg, log, nil); err == nil {
 		t.Fatal("expected error when the address is in use")

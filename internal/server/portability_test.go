@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -412,10 +411,11 @@ func TestAdminSocket(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.DataDir = dataDir
 	cfg.Server.Listen = "127.0.0.1:0"
+	cfg.Server.S3.Listen = "127.0.0.1:0"
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	ready := make(chan struct{})
-	go func() { done <- Run(runCtx, cfg, quiet, func(net.Addr) { close(ready) }) }()
+	go func() { done <- Run(runCtx, cfg, quiet, func(Addrs) { close(ready) }) }()
 	select {
 	case <-ready:
 	case err := <-done:

@@ -49,9 +49,10 @@ format = "json"
 		t.Fatal(err)
 	}
 	want := Config{
-		Server: Server{DataDir: "/var/lib/f1", Listen: ":9999"},
-		Log:    Log{Level: "debug", Format: "json"},
-		Auth:   Auth{S3GroupTTL: "24h"},
+		Server: Server{DataDir: "/var/lib/f1", Listen: ":9999",
+			S3: S3{Listen: "127.0.0.1:9000", Region: "us-east-1", CreateBucket: true, UploadExpiry: "168h"}},
+		Log:  Log{Level: "debug", Format: "json"},
+		Auth: Auth{S3GroupTTL: "24h"},
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -68,6 +69,9 @@ func TestLoadErrors(t *testing.T) {
 		{"unknown key", "[server]\nlisten_addr = \":1\"", "unknown keys: server.listen_addr"},
 		{"unknown section", "[s3]\nlisten = \":1\"", "unknown keys: s3, s3.listen"},
 		{"bad listen", "[server]\nlisten = \"localhost\"", "server.listen"},
+		{"bad s3 listen", "[server.s3]\nlisten = \"localhost\"", "server.s3.listen"},
+		{"bad upload expiry", "[server.s3]\nupload_expiry = \"soon\"", "server.s3.upload_expiry"},
+		{"duplicate alias", "[[server.s3.alias]]\nbucket = \"b\"\nnamespace = \"n\"\n[[server.s3.alias]]\nbucket = \"b\"\nnamespace = \"m\"", "duplicate bucket"},
 		{"bad level", "[log]\nlevel = \"verbose\"", "log.level"},
 		{"bad format", "[log]\nformat = \"xml\"", "log.format"},
 		{"empty data dir", "[server]\ndata_dir = \"\"", "server.data_dir"},

@@ -409,7 +409,21 @@ Provide a public Go SDK in `pkg/f1client`.
 
 ## S3 compatibility API
 
-Served on its own listener (default `:9000`). Path-style and virtual-host-style addressing (`server.s3.domain` configures the latter).
+Served on its own listener (`[server.s3] listen`, default `127.0.0.1:9000`). Path-style and virtual-host-style addressing (`server.s3.domain` configures the latter). Precise semantics (authentication details, bucket creation and deletion, metadata, conditional requests, checksums, versioning rules) are in ADR-0007.
+
+```toml
+[server.s3]
+listen        = "127.0.0.1:9000"   # "" disables the S3 API
+region        = "us-east-1"
+# domain      = "s3.example.com"   # virtual-host addressing
+create_bucket = true               # server administrators may create and delete buckets
+upload_expiry = "168h"             # open multipart uploads are aborted after this
+
+[[server.s3.alias]]                # expose a branch as a bucket
+bucket    = "design-dev"
+namespace = "design"
+ref       = "heads/dev"
+```
 
 ### Mapping
 
@@ -425,14 +439,14 @@ Served on its own listener (default `:9000`). Path-style and virtual-host-style 
 | Group | Operations | Phase |
 |---|---|---|
 | Service | ListBuckets | 4a |
-| Bucket | HeadBucket, CreateBucket (creates a namespace with the S3 preset; can be disabled), DeleteBucket (empty only), GetBucketLocation | 4a |
+| Bucket | HeadBucket, CreateBucket (server administrators; creates a namespace with the S3 preset; can be disabled), DeleteBucket (server administrators; empty only; the directory is moved aside, not erased), GetBucketLocation | 4a |
 | Object | GetObject (Range, If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since), HeadObject, PutObject (incl. conditional `If-None-Match: *` and `If-Match`), DeleteObject, DeleteObjects, CopyObject (same or other bucket; metadata COPY/REPLACE) | 4a |
 | Listing | ListObjectsV2 (prefix, delimiter, continuation-token, start-after, max-keys, fetch-owner), ListObjects (v1) | 4a |
 | Multipart | CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListParts, ListMultipartUploads, UploadPartCopy | 4b |
 | Versioning | GetBucketVersioning (Enabled when retention ≠ none, else Suspended/absent), ListObjectVersions, GetObject/HeadObject/DeleteObject with `versionId` | 4c |
 | Everything else | Return `501 NotImplemented` with S3 error XML | 4a |
 
-Versioning mapping: `versionId` = base32 of the commit hash in which that object version was written. A DeleteObject on a versioned bucket creates a commit that removes the entry, reported as a delete marker in ListObjectVersions.
+Versioning mapping: `versionId` = base32 of the commit hash in which that object version was written. A DeleteObject on a versioned bucket creates a commit that removes the entry, reported as a delete marker in ListObjectVersions. History is immutable: deleting a specific version is possible only for the newest version of a key (which restores the one before it, as in S3); older versions expire with the retention policy (ADR-0007).
 
 ### Authentication and integrity
 
@@ -449,7 +463,7 @@ Versioning mapping: `versionId` = base32 of the commit hash in which that object
 
 ### Multipart internals
 
-- Each part is ingested independently (chunked on its own) and stored as a File. Upload state lives in tables `uploads` and `upload_parts` in `cache.db`; part data lives in sealed packs. If `cache.db` is rebuilt, open uploads are lost (clients get `NoSuchUpload` and restart), which is acceptable.
+- Each part is ingested independently (chunked on its own) and stored as a File, and acknowledged once its pack is durable. Upload state lives in tables `uploads` and `upload_parts` in `cache.db` (schema version 2); part data lives in sealed packs. If `cache.db` is rebuilt, open uploads are lost (clients get `NoSuchUpload` and restart), which is acceptable.
 - Complete builds one File whose chunk list is the concatenation of the part chunk lists. No data is copied.
 - Part Files and their chunks are GC roots while the upload is open. Abort, or expiry after 7 days (configurable), releases them.
 - Digests for the completed File are computed by the background job.
@@ -651,7 +665,7 @@ internal/gc/             garbage collection, fsck
 internal/auth/           principals, verifiers (local, JWT/JWKS), SigV4
 internal/api/native/     native HTTP API
 internal/oidctest/       in-process OIDC provider for tests
-internal/api/s3/         S3 API
+internal/api/s3/         S3 API (SigV4 verification is in internal/auth)
 internal/api/git/        Git smart HTTP, pack export/import, object mapping
 internal/api/lfs/        Git LFS batch and locking API
 internal/client/         working copy, sparse, merge
@@ -764,7 +778,7 @@ Acceptance:
 
 Acceptance:
 - Integration tests with `aws-sdk-go-v2` against an in-process server covering every operation in the table, including presigned URLs and default SDK checksum behavior.
-- If available in CI: AWS CLI (`aws s3 cp/sync/ls`, `aws s3api ...`), rclone (`copy`, `sync`, `check`), MinIO `mc mirror`. Each tool has a script in `test/s3tools/`.
+- AWS CLI (`aws s3 cp/sync/ls`, `aws s3api ...`), rclone (`copy`, `sync`, `check`), MinIO `mc mirror`. Each tool has a script in `test/s3tools/`, run by `TestS3Tools`; CI installs pinned versions with `test/s3tools/install.sh`, and the test skips a missing tool only outside CI.
 - A selected subset of the Ceph `s3-tests` suite passes (list the selected tests in `test/s3tests.txt`; the rest are expected failures for unsupported features).
 - Multipart of a 512 MiB object with 20 parts uploaded in parallel; downloaded content matches; ETag matches the AWS formula. With `F1_TEST_LARGE=1`: 5 GiB with 100 parts.
 - Listing order in a `tree` layout bucket equals byte order of the keys (`a.txt` before `a/b`); `rclone check` and `aws s3 sync` report no differences on a second run.
@@ -840,5 +854,5 @@ Acceptance: documented benchmarks for ingest, small Put rate, S3 GET latency, an
 
 1. ~~G1 token format.~~ **Resolved (2026-10-12, from `../g1`):** G1 issues no tokens. It accepts OIDC bearer tokens (signed JWTs) from the enterprise identity provider, verified against the provider's JWKS found by discovery (G1 `internal/api/auth.go`, plan §10.1). F1 trusts the same provider; no introspection verifier is needed. See D17 and "Token verifiers".
 2. ~~G1 claims.~~ **Resolved:** groups come from configurable claims, default `groups` (string or list; roles claims work too), the principal from `sub` by default, and principals are named `user:<sub>` and `group:<name>`. The audience is per service: G1 accepts its own (its example uses `g1`); F1 is registered with the provider under its own audience, `f1` by default.
-3. S3 folder markers in `tree` layout: this plan rejects keys ending in `/` (and other keys the hierarchy cannot represent) and points users to `layout = flat`. The AWS console and some tools create such markers. Confirm, or choose a representation (for example an empty directory, which Git cannot export) and record it in an ADR.
-4. Path-limited readers (D13): principals with read access to only part of a namespace cannot use the native client, Git or the object endpoints, only the path-addressed native endpoints and S3. Confirm this is acceptable for the SVN-style use case.
+3. ~~S3 folder markers.~~ **Resolved (2026-10-13, confirmed by the user):** `tree` layout rejects keys ending in `/` and the other keys the hierarchy cannot represent with `400 InvalidArgument`, pointing to `layout = flat`, which accepts them.
+4. ~~Path-limited readers.~~ **Resolved (2026-10-13, confirmed by the user):** principals with read access to only part of a namespace use the path-addressed native endpoints and S3; the native client, Git and the object endpoints need whole-namespace read (D13).

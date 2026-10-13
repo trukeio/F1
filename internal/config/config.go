@@ -47,6 +47,41 @@ type Server struct {
 	DataDir string `toml:"data_dir"`
 	// Listen is the address of the main listener (native API, Git).
 	Listen string `toml:"listen"`
+	// S3 configures the S3 API listener.
+	S3 S3 `toml:"s3"`
+}
+
+// S3 configures the S3 compatibility API (doc/plan.md, "S3 compatibility
+// API").
+type S3 struct {
+	// Listen is the address of the S3 listener; empty disables the S3 API.
+	Listen string `toml:"listen"`
+	// Domain enables virtual-host addressing: <bucket>.<domain>.
+	Domain string `toml:"domain"`
+	// Region is the region clients sign for, and GetBucketLocation's answer.
+	Region string `toml:"region"`
+	// CreateBucket allows server administrators to create and delete
+	// namespaces with CreateBucket and DeleteBucket.
+	CreateBucket bool `toml:"create_bucket"`
+	// UploadExpiry is how long an open multipart upload is kept. Default
+	// "168h" (7 days).
+	UploadExpiry string `toml:"upload_expiry"`
+	// Aliases expose a namespace and ref under another bucket name, for
+	// example a branch.
+	Aliases []S3Alias `toml:"alias"`
+}
+
+// S3Alias maps a bucket name to a namespace and ref.
+type S3Alias struct {
+	Bucket    string `toml:"bucket"`
+	Namespace string `toml:"namespace"`
+	Ref       string `toml:"ref"`
+}
+
+// Expiry returns the parsed UploadExpiry.
+func (s S3) Expiry() time.Duration {
+	d, _ := time.ParseDuration(s.UploadExpiry)
+	return d
 }
 
 // Log holds logging settings.
@@ -61,6 +96,12 @@ func Default() Config {
 		Server: Server{
 			DataDir: "data",
 			Listen:  "127.0.0.1:8080",
+			S3: S3{
+				Listen:       "127.0.0.1:9000",
+				Region:       "us-east-1",
+				CreateBucket: true,
+				UploadExpiry: "168h",
+			},
 		},
 		Log: Log{
 			Level:  "info",
@@ -104,6 +145,27 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.Server.Listen); err != nil {
 		errs = append(errs, fmt.Errorf("server.listen: %w", err))
+	}
+	if c.Server.S3.Listen != "" {
+		if _, _, err := net.SplitHostPort(c.Server.S3.Listen); err != nil {
+			errs = append(errs, fmt.Errorf("server.s3.listen: %w", err))
+		}
+	}
+	if c.Server.S3.Region == "" {
+		errs = append(errs, errors.New("server.s3.region must not be empty"))
+	}
+	if d, err := time.ParseDuration(c.Server.S3.UploadExpiry); err != nil || d <= 0 {
+		errs = append(errs, fmt.Errorf("server.s3.upload_expiry: %q is not a positive duration", c.Server.S3.UploadExpiry))
+	}
+	buckets := map[string]bool{}
+	for _, a := range c.Server.S3.Aliases {
+		if a.Bucket == "" || a.Namespace == "" {
+			errs = append(errs, errors.New("server.s3.alias: bucket and namespace are required"))
+		}
+		if buckets[a.Bucket] {
+			errs = append(errs, fmt.Errorf("server.s3.alias: duplicate bucket %q", a.Bucket))
+		}
+		buckets[a.Bucket] = true
 	}
 	if _, err := c.Log.SlogLevel(); err != nil {
 		errs = append(errs, err)

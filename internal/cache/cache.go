@@ -19,9 +19,10 @@ import (
 	"github.com/trukeio/f1/internal/pack"
 )
 
-// SchemaVersion is stored in PRAGMA user_version. A cache with another
-// version is discarded and rebuilt.
-const SchemaVersion = 1
+// SchemaVersion is stored in PRAGMA user_version. A cache of version 1 is
+// upgraded in place; a cache with any other version is discarded and
+// rebuilt.
+const SchemaVersion = 2
 
 // ErrSchema is returned by Open for a cache with another schema version.
 var ErrSchema = errors.New("cache: schema version mismatch")
@@ -55,6 +56,39 @@ CREATE TABLE pending_deletes (
 	name  TEXT PRIMARY KEY,
 	after INTEGER NOT NULL
 );
+` + uploadsSchema
+
+// uploadsSchema holds open S3 multipart uploads (version 2). Upload state
+// is the one thing in cache.db that packs cannot restore: after a rebuild,
+// open uploads are gone and clients restart them (doc/plan.md, "Multipart
+// internals").
+const uploadsSchema = `
+CREATE TABLE uploads (
+	id        TEXT PRIMARY KEY,
+	ref       TEXT NOT NULL,
+	key       TEXT NOT NULL,
+	principal TEXT NOT NULL,
+	created   INTEGER NOT NULL,       -- Unix ns
+	attrs     TEXT NOT NULL           -- JSON: content type, metadata, checksum settings
+) WITHOUT ROWID;
+CREATE INDEX uploads_key ON uploads(ref, key, id);
+CREATE TABLE completed_uploads (    -- completed uploads, so that a repeated completion succeeds
+	id       TEXT PRIMARY KEY,
+	ref      TEXT NOT NULL,
+	key      TEXT NOT NULL,
+	result   TEXT NOT NULL,           -- JSON: ETag, version id, checksum of the completion
+	created  INTEGER NOT NULL         -- Unix ns of the completion
+) WITHOUT ROWID;
+CREATE TABLE upload_parts (
+	upload   TEXT NOT NULL,
+	number   INTEGER NOT NULL,
+	file     BLOB NOT NULL,
+	size     INTEGER NOT NULL,
+	etag     TEXT NOT NULL,           -- hex MD5 of the part
+	checksum BLOB,                    -- the upload's checksum algorithm over the part
+	created  INTEGER NOT NULL,        -- Unix ns
+	PRIMARY KEY (upload, number)
+) WITHOUT ROWID;
 `
 
 // DB is an open cache.db.
@@ -96,6 +130,10 @@ func (c *DB) init() error {
 		}
 		if _, err := c.db.Exec(schema + fmt.Sprintf("PRAGMA user_version = %d;", SchemaVersion)); err != nil {
 			return fmt.Errorf("cache: create schema: %w", err)
+		}
+	case 1:
+		if _, err := c.db.Exec(uploadsSchema + fmt.Sprintf("PRAGMA user_version = %d;", SchemaVersion)); err != nil {
+			return fmt.Errorf("cache: upgrade schema: %w", err)
 		}
 	case SchemaVersion:
 	default:
