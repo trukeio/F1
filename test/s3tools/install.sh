@@ -36,5 +36,5 @@ fetch "https://github.com/minio/mc/releases/download/$MC_VERSION/mc.linux-amd64.
 install -m 755 "$tmp/mc" "$dir/bin/mc"
 
 "$dir/bin/aws" --version
-"$dir/bin/rclone" version | head -1
-"$dir/bin/mc" --version | head -1
+"$dir/bin/rclone" version | sed -n 1p
+"$dir/bin/mc" --version | sed -n 1p
