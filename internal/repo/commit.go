@@ -48,7 +48,11 @@ type CommitRequest struct {
 	Committer Person // defaults to Author
 	Message   string
 	Time      time.Time // defaults to now
-	Principal string    // recorded in refs.log
+	Principal string    // recorded in refs.log; the committer for lock checks
+	// CheckPath is called for every changed file (see UpdateOptions).
+	CheckPath func(ref string, c PathChange) error
+
+	skipLocks bool
 }
 
 // Commit applies changes to the parent's tree, writes the commit, seals it
@@ -94,7 +98,8 @@ func (r *Repo) Commit(ctx context.Context, req CommitRequest) (hash.Hash, error)
 	if err != nil {
 		return hash.Zero, err
 	}
-	if err := r.updateRefs(ctx, []RefUpdate{{Ref: ref, Old: parent, New: h}}, req.Principal, "commit"); err != nil {
+	opts := UpdateOptions{Principal: req.Principal, Reason: "commit", CheckPath: req.CheckPath, skipLocks: req.skipLocks}
+	if err := r.updateRefs(ctx, []RefUpdate{{Ref: ref, Old: parent, New: h}}, opts); err != nil {
 		return hash.Zero, err
 	}
 	return h, nil

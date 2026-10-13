@@ -1,0 +1,130 @@
+// Package test holds integration tests that run a real server in-process
+// and talk to it through the public Go client (pkg/f1client).
+package test
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/trukeio/f1/internal/auth"
+	"github.com/trukeio/f1/internal/config"
+	"github.com/trukeio/f1/internal/server"
+	"github.com/trukeio/f1/internal/serverdb"
+	"github.com/trukeio/f1/pkg/f1client"
+)
+
+var ctx = context.Background()
+
+// env is a running server with an administrator and two users.
+type env struct {
+	dataDir string
+	url     string
+	admin   *f1client.Client // user:admin, server administrator
+	alice   *f1client.Client // user:alice, in group:eng
+	bob     *f1client.Client // user:bob, no groups
+	db      *serverdb.DB     // a second handle on server.db, for ACL setup
+	stop    func()
+}
+
+type envOpts struct {
+	oidc []auth.OIDCConfig
+}
+
+func start(t *testing.T, opts envOpts) *env {
+	t.Helper()
+	dataDir := t.TempDir()
+	db, err := serverdb.Open(ctx, filepath.Join(dataDir, server.ServerDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &env{dataDir: dataDir, db: db}
+	tokens := map[string]string{}
+	for user, groups := range map[string][]string{"admin": nil, "alice": {"group:eng"}, "bob": nil} {
+		if err := db.AddUser(ctx, "user:"+user, groups); err != nil {
+			t.Fatal(err)
+		}
+		_, tok, err := db.CreateToken(ctx, "user:"+user, "test", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens[user] = tok
+	}
+	e.setACL(t, serverdb.ServerNamespace, "user:admin", "", "admin")
+
+	cfg := config.Default()
+	cfg.Server.DataDir = dataDir
+	cfg.Server.Listen = "127.0.0.1:0"
+	cfg.Auth.OIDC = opts.oidc
+	runCtx, cancel := context.WithCancel(ctx)
+	addr := make(chan net.Addr, 1)
+	done := make(chan error, 1)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	go func() { done <- server.Run(runCtx, cfg, log, func(a net.Addr) { addr <- a }) }()
+	select {
+	case a := <-addr:
+		e.url = "http://" + a.String()
+	case err := <-done:
+		t.Fatalf("server: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("server did not start")
+	}
+	e.stop = func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("server: %v", err)
+		}
+		db.Close()
+	}
+	t.Cleanup(e.stop)
+	e.admin = f1client.New(e.url, tokens["admin"])
+	e.alice = f1client.New(e.url, tokens["alice"])
+	e.bob = f1client.New(e.url, tokens["bob"])
+	return e
+}
+
+func (e *env) setACL(t *testing.T, ns, principal, prefix, perms string) {
+	t.Helper()
+	var p []string
+	if perms != "" {
+		p = strings.Split(perms, ",")
+	}
+	if err := e.db.SetACL(ctx, serverdb.ACLEntry{Namespace: ns, Principal: principal, Prefix: prefix, Perms: p}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (e *env) createNS(t *testing.T, name, preset string) {
+	t.Helper()
+	if _, err := e.admin.CreateNamespace(ctx, f1client.CreateNamespaceRequest{Name: name, Preset: preset}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func put(t *testing.T, c *f1client.Client, ns, path, data, parent string) f1client.PutResult {
+	t.Helper()
+	res, err := c.Put(ctx, ns, "main", path, strings.NewReader(data), int64(len(data)), &f1client.PutOptions{Parent: parent})
+	if err != nil {
+		t.Fatalf("put %s: %v", path, err)
+	}
+	return res
+}
+
+func get(t *testing.T, c *f1client.Client, ns, ref, path string) string {
+	t.Helper()
+	rc, _, err := c.Get(ctx, ns, ref, path, nil)
+	if err != nil {
+		t.Fatalf("get %s: %v", path, err)
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

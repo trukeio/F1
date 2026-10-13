@@ -159,6 +159,18 @@ func (m *Manager) List() []RepoStatus {
 	return out
 }
 
+// Names returns the names of the open repositories in order.
+func (m *Manager) Names() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.repos))
+	for ns := range m.repos {
+		out = append(out, ns)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Attach registers and opens the repository directory repos/<ns>.
 func (m *Manager) Attach(ctx context.Context, ns string) error {
 	if err := policy.ValidNamespace(ns); err != nil {
@@ -183,6 +195,27 @@ func (m *Manager) Attach(ctx context.Context, ns string) error {
 	m.log.Info("repository attached", "namespace", ns, "uuid", meta.UUID)
 	m.warnDuplicateUUIDs()
 	return nil
+}
+
+// Create creates, registers and opens a new namespace.
+func (m *Manager) Create(ctx context.Context, ns string, cfg policy.Config) (*repo.Repo, error) {
+	if err := policy.ValidNamespace(ns); err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	dir := m.dir(ns)
+	if _, err := os.Stat(dir); err == nil {
+		return nil, fmt.Errorf("%w: %s", ErrRepoExists, ns)
+	}
+	if err := repo.Create(dir, cfg); err != nil {
+		return nil, err
+	}
+	if err := m.Attach(ctx, ns); err != nil {
+		return nil, err
+	}
+	return m.Get(ns)
 }
 
 // Detach closes and unregisters a repository, leaving its directory

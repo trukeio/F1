@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/trukeio/f1/internal/cache"
@@ -29,6 +30,8 @@ Commands:
   attach <ns>                      register the directory repos/<ns>
   detach <ns>                      unregister a repository and leave its directory ready to move
   rebuild-cache <ns> | --dir <dir> rebuild cache.db (offline)
+  export-acl <ns> [<file.toml>]    write the namespace's ACL as TOML (default: stdout)
+  import-acl <ns> <file.toml>      apply an exported ACL; unknown users are skipped
 
 With a running server, commands go through its admin socket; otherwise
 they work on the data directory directly.
@@ -53,7 +56,8 @@ func repoCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	nargs := map[string]int{"list": 0, "freeze": 1, "unfreeze": 1, "archive": 2, "import": 1, "attach": 1, "detach": 1, "rebuild-cache": -1}
+	nargs := map[string]int{"list": 0, "freeze": 1, "unfreeze": 1, "archive": 2, "import": 1, "attach": 1, "detach": 1, "rebuild-cache": -1,
+		"export-acl": -1, "import-acl": 2}
 	want, ok := nargs[cmd]
 	if !ok {
 		fmt.Fprintf(stderr, "f1d repo: unknown command %q\n\n%s", cmd, repoUsage)
@@ -100,6 +104,41 @@ func repoCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch cmd {
+	case "export-acl", "import-acl":
+		if cmd == "export-acl" && (fs.NArg() < 1 || fs.NArg() > 2) {
+			fs.Usage()
+			return 2
+		}
+		db, err := offlineDB()
+		if err != nil {
+			return fail(err)
+		}
+		defer db.Close()
+		if cmd == "import-acl" {
+			data, err := os.ReadFile(fs.Arg(1))
+			if err != nil {
+				return fail(err)
+			}
+			n, err := importACL(ctx, db, fs.Arg(0), data, stdout)
+			if err != nil {
+				return fail(err)
+			}
+			fmt.Fprintf(stdout, "%s: imported %d ACL entries\n", fs.Arg(0), n)
+			return 0
+		}
+		out := stdout
+		if fs.NArg() == 2 {
+			f, err := os.Create(fs.Arg(1))
+			if err != nil {
+				return fail(err)
+			}
+			defer f.Close()
+			out = f
+		}
+		if _, err := exportACL(ctx, db, fs.Arg(0), out); err != nil {
+			return fail(err)
+		}
+		return 0
 	case "list":
 		if running {
 			repos, err := admin.List(ctx)

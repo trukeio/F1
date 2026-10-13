@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -50,8 +51,9 @@ format = "json"
 	want := Config{
 		Server: Server{DataDir: "/var/lib/f1", Listen: ":9999"},
 		Log:    Log{Level: "debug", Format: "json"},
+		Auth:   Auth{S3GroupTTL: "24h"},
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
 	}
 }
@@ -83,6 +85,34 @@ func TestLoadErrors(t *testing.T) {
 func TestLoadMissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "missing.toml")); err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestAuthConfig(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+[auth]
+s3_group_ttl = "1h"
+
+[[auth.oidc]]
+name = "corp"
+issuer = "https://login.example.com/realms/acme"
+audiences = ["f1"]
+group_claims = ["groups", "roles"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.GroupTTL().Hours() != 1 || len(cfg.Auth.OIDC) != 1 || cfg.Auth.OIDC[0].Audiences[0] != "f1" {
+		t.Fatalf("auth = %+v", cfg.Auth)
+	}
+	for _, bad := range []string{
+		"[auth]\ns3_group_ttl = \"forever\"",
+		"[[auth.oidc]]\nname = \"corp\"",                                        // no issuer or audience
+		"[[auth.oidc]]\nname = \"local\"\nissuer = \"x\"\naudiences = [\"f1\"]", // reserved name
+	} {
+		if _, err := Load(writeConfig(t, bad)); err == nil {
+			t.Errorf("accepted: %s", bad)
+		}
 	}
 }
 

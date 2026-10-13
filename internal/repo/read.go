@@ -84,6 +84,19 @@ func (r *Repo) OpenFile(ctx context.Context, file hash.Hash) (*content.Reader, e
 	return content.Open(ctx, r.store, file)
 }
 
+// FileSize returns the content length of a File object.
+func (r *Repo) FileSize(ctx context.Context, file hash.Hash) (uint64, error) {
+	p, err := r.payload(ctx, file, object.TypeFile)
+	if err != nil {
+		return 0, err
+	}
+	f, err := object.DecodeAs[*object.File](p)
+	if err != nil {
+		return 0, err
+	}
+	return f.Size, nil
+}
+
 // ListOpts selects the entries List returns.
 type ListOpts struct {
 	Prefix    string // only paths starting with Prefix

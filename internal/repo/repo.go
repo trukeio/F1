@@ -59,6 +59,9 @@ type Repo struct {
 	gateCond *sync.Cond
 	gate     gate
 
+	locksMu sync.Mutex // after refMu when both are held
+	locks   []Lock
+
 	groupMu sync.Mutex
 	groups  map[string]*committer
 	stop    context.CancelFunc
@@ -127,6 +130,11 @@ func Open(ctx context.Context, path string, opts Options) (*Repo, OpenReport, er
 		stop: stop, stopCtx: stopCtx,
 	}
 	r.gateCond = sync.NewCond(&r.gateMu)
+	if err := r.loadLocks(); err != nil {
+		st.Close(ctx)
+		dir.Close()
+		return nil, rep, err
+	}
 	return r, rep, nil
 }
 
@@ -212,25 +220,50 @@ func (e *ConflictError) Error() string {
 
 func (e *ConflictError) Unwrap() error { return ErrConflict }
 
+// UpdateOptions describe who updates refs and how changes are checked.
+type UpdateOptions struct {
+	Principal string // recorded in refs.log; the committer for lock checks
+	Reason    string
+	// CheckPath, if set, is called for every file a branch update changes
+	// (the protocol layer's write ACL check); an error rejects the update.
+	CheckPath func(ref string, c PathChange) error
+
+	skipLocks bool // the group committer checked locks per request
+}
+
 // UpdateRefs applies ref updates atomically: all old values are checked,
 // then one refs.log group is appended and refs is replaced. Objects the new
 // values point to must be stored; the open pack is sealed first so that
 // they are durable before any ref points to them.
-func (r *Repo) UpdateRefs(ctx context.Context, updates []RefUpdate, principal, reason string) error {
+//
+// Branch updates (heads/...) are checked file by file: the changed files are
+// the diff from the old value, or for a new branch from its merge base with
+// the default ref. Each is passed to opts.CheckPath, and checked against
+// the namespace's lock policy (locks of the ref, and for a new branch also
+// of the default ref).
+func (r *Repo) UpdateRefs(ctx context.Context, updates []RefUpdate, opts UpdateOptions) error {
 	end, err := r.beginWrite()
 	if err != nil {
 		return err
 	}
 	defer end()
-	return r.updateRefs(ctx, updates, principal, reason)
+	return r.updateRefs(ctx, updates, opts)
+}
+
+type refCheck struct {
+	changes  []PathChange
+	lockRefs []string
 }
 
 // updateRefs is UpdateRefs for callers that already registered the write.
-func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, principal, reason string) error {
+func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, opts UpdateOptions) error {
 	if len(updates) == 0 {
 		return nil
 	}
+	mode, _ := policy.ParseLocks(r.meta.Locks)
+	checkLocks := mode.Mode != "off" && !opts.skipLocks
 	seen := map[string]bool{}
+	checks := make([]*refCheck, len(updates))
 	for i := range updates {
 		updates[i].Ref = policy.FullRefName(updates[i].Ref)
 		u := updates[i]
@@ -241,14 +274,29 @@ func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, principal, r
 			return fmt.Errorf("repo: ref %s updated twice in one transaction", u.Ref)
 		}
 		seen[u.Ref] = true
-		if !u.New.IsZero() {
-			ok, err := r.store.Has(ctx, u.New)
+		if u.New.IsZero() {
+			continue
+		}
+		ok, err := r.store.Has(ctx, u.New)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: ref %s → %s", store.ErrMissingReference, u.Ref, u.New.Short())
+		}
+		if isBranch(u.Ref) && (checkLocks || opts.CheckPath != nil) {
+			changes, lockRefs, err := r.refChanges(ctx, u)
 			if err != nil {
 				return err
 			}
-			if !ok {
-				return fmt.Errorf("%w: ref %s → %s", store.ErrMissingReference, u.Ref, u.New.Short())
+			if opts.CheckPath != nil {
+				for _, c := range changes {
+					if err := opts.CheckPath(u.Ref, c); err != nil {
+						return err
+					}
+				}
 			}
+			checks[i] = &refCheck{changes: changes, lockRefs: lockRefs}
 		}
 	}
 	if err := r.store.Flush(ctx); err != nil {
@@ -262,6 +310,22 @@ func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, principal, r
 			return &ConflictError{Ref: u.Ref, Expected: u.Old, Current: cur}
 		}
 	}
+	if checkLocks {
+		r.locksMu.Lock()
+		now := time.Now()
+		for _, c := range checks {
+			if c == nil {
+				continue
+			}
+			for _, ch := range c.changes {
+				if err := r.lockCheck(c.lockRefs, ch.Path, opts.Principal, mode, now); err != nil {
+					r.locksMu.Unlock()
+					return err
+				}
+			}
+		}
+		r.locksMu.Unlock()
+	}
 	now := time.Now()
 	tx := ulid.Make().String()
 	recs := make([]repodir.LogRecord, len(updates))
@@ -270,7 +334,7 @@ func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, principal, r
 		next[k] = v
 	}
 	for i, u := range updates {
-		recs[i] = repodir.LogRecord{Time: now, Tx: tx, Principal: principal, Ref: u.Ref, Old: u.Old, New: u.New, Reason: reason}
+		recs[i] = repodir.LogRecord{Time: now, Tx: tx, Principal: opts.Principal, Ref: u.Ref, Old: u.Old, New: u.New, Reason: opts.Reason}
 		if u.New.IsZero() {
 			delete(next, u.Ref)
 		} else {

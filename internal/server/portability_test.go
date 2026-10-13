@@ -112,7 +112,7 @@ func populate(t *testing.T, r *repo.Repo) {
 	if _, err := commitFiles(t, r, "feature", map[string][]byte{"f.txt": []byte("feature")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.UpdateRefs(ctx, []repo.RefUpdate{{Ref: "tags/v1", New: r.Ref("main")}}, "t", "tag"); err != nil {
+	if err := r.UpdateRefs(ctx, []repo.RefUpdate{{Ref: "tags/v1", New: r.Ref("main")}}, repo.UpdateOptions{Principal: "t", Reason: "tag"}); err != nil {
 		t.Fatal(err)
 	}
 }

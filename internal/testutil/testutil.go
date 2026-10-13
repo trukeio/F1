@@ -41,6 +41,22 @@ func Reader(seed string) io.Reader {
 	return h.XOF()
 }
 
+// ReadAt returns n bytes of the Reader(seed) stream starting at off. It
+// generates and discards the bytes before off: the BLAKE3 library's
+// OutputReader.Seek (lukechampine.com/blake3 v1.4.1) returns wrong bytes
+// at some offsets (64, 65, 8191, ...), so it is not used.
+func ReadAt(seed string, off int64, n int) []byte {
+	xof := Reader(seed)
+	if _, err := io.CopyN(io.Discard, xof, off); err != nil {
+		panic(err)
+	}
+	b := make([]byte, n)
+	if _, err := io.ReadFull(xof, b); err != nil {
+		panic(err)
+	}
+	return b
+}
+
 // RepoRoot returns the repository root (the directory holding go.mod).
 func RepoRoot(t testing.TB) string {
 	t.Helper()

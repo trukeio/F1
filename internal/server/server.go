@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/trukeio/f1/internal/api/native"
+	"github.com/trukeio/f1/internal/auth"
 	"github.com/trukeio/f1/internal/config"
 	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/serverdb"
@@ -68,8 +70,18 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(ad
 		return fmt.Errorf("listen %s: %w", cfg.Server.Listen, err)
 	}
 
+	chain := &auth.Chain{Verifiers: []auth.Verifier{&auth.LocalTokens{DB: db}}, Log: log}
+	for _, oc := range cfg.Auth.OIDC {
+		v, err := auth.NewOIDC(oc, db, nil)
+		if err != nil {
+			return err
+		}
+		chain.Verifiers = append(chain.Verifiers, v)
+	}
+	nativeAPI := &native.Server{Repos: mgr, Auth: chain, ACL: &auth.Authorizer{DB: db}, DB: db, Log: log}
+
 	srv := &http.Server{
-		Handler:           newMux(),
+		Handler:           newMux(nativeAPI.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
@@ -108,8 +120,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(ad
 	return nil
 }
 
-func newMux() *http.ServeMux {
+func newMux(nativeAPI http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.Handle("/api/v1/", nativeAPI)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))

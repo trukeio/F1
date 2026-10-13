@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/trukeio/f1/internal/policy"
 	"github.com/trukeio/f1/internal/repo"
 )
 
@@ -85,6 +86,22 @@ func adminHandler(m *Manager, log *slog.Logger) http.Handler {
 	})
 	mux.HandleFunc("POST /repos/{ns}/attach", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, m.Attach(r.Context(), r.PathValue("ns")))
+	})
+	mux.HandleFunc("POST /repos/{ns}/create", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Preset string `json:"preset"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		cfg := policy.Default()
+		var err error
+		if req.Preset != "" {
+			if cfg, err = policy.Preset(req.Preset); err != nil {
+				reply(w, nil, err)
+				return
+			}
+		}
+		_, err = m.Create(r.Context(), r.PathValue("ns"), cfg)
+		reply(w, nil, err)
 	})
 	mux.HandleFunc("POST /repos/{ns}/detach", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, m.Detach(r.Context(), r.PathValue("ns")))
@@ -171,6 +188,12 @@ func (c *AdminClient) List(ctx context.Context) ([]RepoStatus, error) {
 // Do runs a repository action: freeze, unfreeze, attach or detach.
 func (c *AdminClient) Do(ctx context.Context, action, ns string) error {
 	return c.call(ctx, http.MethodPost, "/repos/"+ns+"/"+action, nil, nil)
+}
+
+// Create asks the server to create a namespace from a preset ("" for the
+// defaults).
+func (c *AdminClient) Create(ctx context.Context, ns, preset string) error {
+	return c.call(ctx, http.MethodPost, "/repos/"+ns+"/create", map[string]string{"preset": preset}, nil)
 }
 
 // Archive asks the server to write an archive of ns to path (absolute,

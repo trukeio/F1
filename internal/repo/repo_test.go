@@ -139,19 +139,19 @@ func TestCAS(t *testing.T) {
 	if !errors.As(err, &ce) || ce.Current != c1 || !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale commit: %v", err)
 	}
-	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "tags/v1", New: c1}, {Ref: "main", Old: c1, New: hash.Zero}}, "test", "atomic"); err != nil {
+	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "tags/v1", New: c1}, {Ref: "main", Old: c1, New: hash.Zero}}, UpdateOptions{Principal: "test", Reason: "atomic"}); err != nil {
 		t.Fatal(err)
 	}
 	if r.Ref("main") != hash.Zero || r.Ref("tags/v1") != c1 {
 		t.Fatalf("refs = %v", r.Refs())
 	}
 	// An atomic update with one stale ref changes nothing.
-	err = r.UpdateRefs(ctx, []RefUpdate{{Ref: "heads/x", New: c1}, {Ref: "tags/v1", Old: hash.Zero, New: c1}}, "test", "atomic")
+	err = r.UpdateRefs(ctx, []RefUpdate{{Ref: "heads/x", New: c1}, {Ref: "tags/v1", Old: hash.Zero, New: c1}}, UpdateOptions{Principal: "test", Reason: "atomic"})
 	if !errors.Is(err, ErrConflict) || r.Ref("heads/x") != hash.Zero {
 		t.Fatalf("partial atomic update: %v, refs %v", err, r.Refs())
 	}
 	missing := object.ChunkHash([]byte("nope"))
-	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "heads/y", New: missing}}, "", ""); err == nil {
+	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "heads/y", New: missing}}, UpdateOptions{Principal: "", Reason: ""}); err == nil {
 		t.Fatal("ref to a missing object accepted")
 	}
 }
@@ -326,7 +326,7 @@ func naiveList(sorted []string, o ListOpts) []string {
 func TestMergeBase(t *testing.T) {
 	r := newRepo(t, policy.Default())
 	base := put(t, r, "main", map[string]string{"f": "0"})
-	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "feature", New: base}}, "", "branch"); err != nil {
+	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "feature", New: base}}, UpdateOptions{Principal: "", Reason: "branch"}); err != nil {
 		t.Fatal(err)
 	}
 	m := put(t, r, "main", map[string]string{"f": "main"})

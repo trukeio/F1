@@ -158,6 +158,7 @@ func (c *committer) process(batch []*pendingReq) {
 			Author:    accepted[0].req.Author,
 			Principal: accepted[0].req.Principal,
 			Message:   batchMessage(accepted),
+			skipLocks: true, // checked per request in evaluate
 		}
 		h, err := c.r.Commit(ctx, req)
 		switch {
@@ -214,6 +215,10 @@ func (c *committer) evaluate(ctx context.Context, head hash.Hash, batch []*pendi
 				continue
 			}
 		}
+		if err := c.checkLocks(head, p.req); err != nil {
+			p.done <- submitResult{err: err}
+			continue
+		}
 		accepted = append(accepted, p)
 		changes = append(changes, ch)
 		switch ch.Op {
@@ -228,6 +233,29 @@ func (c *committer) evaluate(ctx context.Context, head hash.Hash, batch []*pendi
 		}
 	}
 	return accepted, changes, nil
+}
+
+// checkLocks checks one request's paths against the lock policy with the
+// request's own principal: a batch may mix principals, so the commit itself
+// skips the lock check.
+func (c *committer) checkLocks(head hash.Hash, req SubmitRequest) error {
+	mode, _ := policy.ParseLocks(c.r.meta.Locks)
+	if mode.Mode == "off" || !isBranch(c.ref) {
+		return nil
+	}
+	refs := []string{c.ref}
+	if def := policy.FullRefName(c.r.meta.DefaultRef); head.IsZero() && def != c.ref {
+		refs = append(refs, def)
+	}
+	c.r.locksMu.Lock()
+	defer c.r.locksMu.Unlock()
+	now := time.Now()
+	for _, p := range changePaths(req.Change) {
+		if err := c.r.lockCheck(refs, p, req.Principal, mode, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func batchMessage(accepted []*pendingReq) string {

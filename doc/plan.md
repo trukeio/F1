@@ -300,12 +300,12 @@ Stored in the repository's `locks` file, one line per lock: id, ref, path, owner
 - `locks = required:<globs>`: commits that modify matching paths are rejected unless the committer holds the lock.
 - `locks = exclusive`: taking a lock is optional, but a held lock is enforced: commits by other principals that modify a locked path are rejected.
 - `locks = required:<globs>` also enforces held locks on paths outside the globs, as `exclusive` does.
-- Enforcement happens in the core commit path, so it applies to all protocols.
+- Enforcement happens in the core commit path, so it applies to all protocols. A glob without `/` matches the file name in any directory; group commits check each request with its own principal (ADR-0006).
 - The checked change set is the diff between the old and new value of the ref. For a ref being created, it is the diff between the new commit and its merge base with `default_ref`, or against the empty tree if there is none.
 
 ### ACLs
 
-Table `acl(namespace, principal, path_prefix, perms)` in `server.db`, where `principal` is `user:<name>` or `group:<name>` (the same syntax as G1), with perms from `read`, `write`, `lock`, `admin`. The longest matching prefix wins. Default deny.
+Table `acl(namespace, principal, path_prefix, perms)` in `server.db`, where `principal` is `user:<name>` or `group:<name>` (the same syntax as G1), with perms from `read`, `write`, `lock`, `admin`. The longest matching prefix wins. Default deny. Precise rules (string prefixes, combining a user's and its groups' entries, empty perms deny, `admin` implies all, server administrators via namespace `*`) are in ADR-0006.
 
 Hash-addressed access bypasses paths, so it requires read on the whole namespace (D13). Otherwise a principal with partial read could fetch any object by hash, probe for content through `objects/missing`, or commit a tree that references an object it cannot read and then read it through its own path.
 
@@ -379,7 +379,7 @@ Target: ≥ 500 small Puts per second per namespace on a single node with SSD.
 
 ## Native API (`/api/v1`)
 
-JSON for metadata, raw bytes for content. Authentication: bearer token.
+JSON for metadata, raw bytes for content. Authentication: bearer token. Refs are one URL segment (`%2F` for `/`); `F1-Parent` takes a commit hash or `new`; errors are JSON `{code, message, current?, owner?}`; conventions in ADR-0006. The JSON types are those of `pkg/f1client`.
 
 | Method and path | Purpose |
 |---|---|
@@ -399,8 +399,9 @@ JSON for metadata, raw bytes for content. Authentication: bearer token.
 | `GET /ns/{ns}/objects/{hash}` | Download one object. Whole-namespace read |
 | `POST /ns/{ns}/objects/fetch` | Body: list of hashes. Returns pack stream. Whole-namespace read |
 | `POST /ns/{ns}/commits` | Create commit from `{ref, parent, changes, message}` with already uploaded objects. Whole-namespace read, write on the changed paths. If a referenced object is no longer stored (D9), returns `409` with the list of missing hashes |
-| `POST /ns/{ns}/locks`, `GET`, `DELETE /ns/{ns}/locks/{id}` | Locks |
+| `POST /ns/{ns}/locks`, `GET`, `DELETE /ns/{ns}/locks/{id}` | Locks (`?force=true` needs admin on the path) |
 | `GET /ns/{ns}/archive` | Stream the repository as a ZIP (admin) |
+| `GET /me`, `POST /me/s3keys`, `GET /me/s3keys`, `DELETE /me/s3keys/{key}` | The caller, and its S3 access keys |
 
 Objects are per repository (D6), so every object endpoint is under `/ns/{ns}`. The pack stream format used by the object endpoints is the pack file format without the requirement of being 64 MiB.
 
@@ -649,6 +650,7 @@ internal/policy/         namespace config, retention
 internal/gc/             garbage collection, fsck
 internal/auth/           principals, verifiers (local, JWT/JWKS), SigV4
 internal/api/native/     native HTTP API
+internal/oidctest/       in-process OIDC provider for tests
 internal/api/s3/         S3 API
 internal/api/git/        Git smart HTTP, pack export/import, object mapping
 internal/api/lfs/        Git LFS batch and locking API

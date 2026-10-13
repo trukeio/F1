@@ -148,3 +148,52 @@ func TestRepoCommands(t *testing.T) {
 		t.Fatalf("serve exited %d", code)
 	}
 }
+
+func TestIdentityCommands(t *testing.T) {
+	data := t.TempDir()
+	cfg := filepath.Join(data, "f1d.toml")
+	if err := os.WriteFile(cfg, []byte("[server]\ndata_dir = \".\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runOK(t, "user", "add", "--config", cfg, "--group", "eng", "--group", "group:ops", "alice")
+	runFail(t, "already exists", "user", "add", "--config", cfg, "alice")
+	if out := runOK(t, "user", "list", "--config", cfg); !strings.Contains(out, "user:alice\tlocal\tgroup:eng,group:ops") {
+		t.Fatalf("user list: %q", out)
+	}
+	token := strings.TrimSpace(runOK(t, "token", "create", "--config", cfg, "--expires", "720h", "alice"))
+	if !strings.HasPrefix(token, "f1_") {
+		t.Fatalf("token = %q", token)
+	}
+	out := runOK(t, "token", "list", "--config", cfg, "alice")
+	id := strings.Fields(out)[0]
+	runOK(t, "token", "revoke", "--config", cfg, id)
+	if out := runOK(t, "token", "list", "--config", cfg); !strings.Contains(out, "revoked") {
+		t.Fatalf("token list after revoke: %q", out)
+	}
+	if out := runOK(t, "s3key", "create", "--config", cfg, "alice"); !strings.Contains(out, "secret_key = ") {
+		t.Fatalf("s3key create: %q", out)
+	}
+	runOK(t, "ns", "create", "--config", cfg, "--preset", "svn", "hw")
+	runOK(t, "acl", "set", "--config", cfg, "hw", "group:eng", "", "read,write")
+	runOK(t, "acl", "set", "--config", cfg, "hw", "user:alice", "secret/", "none")
+	runOK(t, "acl", "set", "--config", cfg, "hw", "user:ghost", "", "read")
+	runFail(t, "unknown permission", "acl", "set", "--config", cfg, "hw", "group:eng", "", "fly")
+	runFail(t, "user:<name> or group:<name>", "acl", "set", "--config", cfg, "hw", "eng", "", "read")
+	if out := runOK(t, "acl", "list", "--config", cfg, "hw"); !strings.Contains(out, "user:alice\t\"secret/\"\tnone") {
+		t.Fatalf("acl list: %q", out)
+	}
+
+	// Export and import into another namespace: the unknown user is skipped.
+	aclFile := filepath.Join(t.TempDir(), "acl.toml")
+	runOK(t, "repo", "export-acl", "--config", cfg, "hw", aclFile)
+	runOK(t, "ns", "create", "--config", cfg, "hw2")
+	out = runOK(t, "repo", "import-acl", "--config", cfg, "hw2", aclFile)
+	if !strings.Contains(out, "skipped user:ghost") || !strings.Contains(out, "imported 2 ACL entries") {
+		t.Fatalf("import-acl: %q", out)
+	}
+	if out := runOK(t, "acl", "list", "--config", cfg, "hw2"); strings.Contains(out, "ghost") || !strings.Contains(out, "group:eng") {
+		t.Fatalf("imported acl: %q", out)
+	}
+	runOK(t, "acl", "rm", "--config", cfg, "hw2", "group:eng", "")
+	runOK(t, "user", "disable", "--config", cfg, "alice")
+}

@@ -22,6 +22,43 @@ var migrations = []string{
 		uuid       TEXT NOT NULL,
 		created_at INTEGER NOT NULL
 	);`,
+	// Phase 3: identities and ACLs (ADR-0005, ADR-0006).
+	`CREATE TABLE principals (
+		name           TEXT PRIMARY KEY,           -- "user:<name>"
+		issuer         TEXT NOT NULL,              -- "local" or an OIDC provider name
+		created_at     INTEGER NOT NULL,
+		disabled       INTEGER NOT NULL DEFAULT 0,
+		groups         TEXT NOT NULL DEFAULT '[]', -- OIDC: groups at the last token use (JSON)
+		groups_seen_at INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE memberships (                     -- local users' groups
+		principal  TEXT NOT NULL REFERENCES principals(name) ON DELETE CASCADE,
+		group_name TEXT NOT NULL,                  -- "group:<name>"
+		PRIMARY KEY (principal, group_name)
+	);
+	CREATE TABLE tokens (
+		id          TEXT PRIMARY KEY,
+		principal   TEXT NOT NULL REFERENCES principals(name) ON DELETE CASCADE,
+		hash        BLOB NOT NULL UNIQUE,          -- SHA-256 of the token
+		description TEXT NOT NULL DEFAULT '',
+		created_at  INTEGER NOT NULL,
+		expires_at  INTEGER NOT NULL DEFAULT 0,    -- 0: never
+		revoked_at  INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE s3keys (
+		access_key TEXT PRIMARY KEY,
+		secret     TEXT NOT NULL,                  -- SigV4 needs the secret itself
+		principal  TEXT NOT NULL REFERENCES principals(name) ON DELETE CASCADE,
+		created_at INTEGER NOT NULL,
+		revoked_at INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE acl (
+		namespace   TEXT NOT NULL,                 -- a namespace, or "*" for the server
+		principal   TEXT NOT NULL,                 -- "user:<name>" or "group:<name>"
+		path_prefix TEXT NOT NULL,
+		perms       TEXT NOT NULL,                 -- comma-separated: read, write, lock, admin; "" denies
+		PRIMARY KEY (namespace, principal, path_prefix)
+	);`,
 }
 
 // DB is an open server.db.

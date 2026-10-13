@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/fxamacker/cbor/v2 v2.9.4
+	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/klauspost/compress v1.20.1
 	github.com/oklog/ulid/v2 v2.1.2
 	lukechampine.com/blake3 v1.4.1

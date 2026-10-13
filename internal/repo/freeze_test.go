@@ -64,7 +64,7 @@ func TestFreezeWaitsForInflightWrites(t *testing.T) {
 	if !r.Store().Held() {
 		t.Fatal("frozen repository has no store hold")
 	}
-	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "tags/t", New: r.Ref("main")}}, "", ""); !errors.Is(err, ErrFrozen) {
+	if err := r.UpdateRefs(ctx, []RefUpdate{{Ref: "tags/t", New: r.Ref("main")}}, UpdateOptions{Principal: "", Reason: ""}); !errors.Is(err, ErrFrozen) {
 		t.Fatalf("ref update while frozen: %v", err)
 	}
 	r.Unfreeze()

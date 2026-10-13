@@ -10,14 +10,34 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/trukeio/f1/internal/auth"
 )
 
 // Config is the f1d server configuration.
 type Config struct {
 	Server Server `toml:"server"`
 	Log    Log    `toml:"log"`
+	Auth   Auth   `toml:"auth"`
+}
+
+// Auth configures authentication (D17, ADR-0005).
+type Auth struct {
+	// OIDC lists the trusted OIDC providers (normally one: the enterprise
+	// identity provider that G1 also trusts).
+	OIDC []auth.OIDCConfig `toml:"oidc"`
+	// S3GroupTTL is how long an external principal's groups, recorded at its
+	// last token use, apply to its S3 key requests. Default "24h".
+	S3GroupTTL string `toml:"s3_group_ttl"`
+}
+
+// GroupTTL returns the parsed S3GroupTTL.
+func (a Auth) GroupTTL() time.Duration {
+	d, _ := time.ParseDuration(a.S3GroupTTL)
+	return d
 }
 
 // Server holds listener and storage settings.
@@ -46,6 +66,7 @@ func Default() Config {
 			Level:  "info",
 			Format: "text",
 		},
+		Auth: Auth{S3GroupTTL: "24h"},
 	}
 }
 
@@ -91,6 +112,20 @@ func (c Config) Validate() error {
 	case "text", "json":
 	default:
 		errs = append(errs, fmt.Errorf("log.format: %q is not one of text, json", c.Log.Format))
+	}
+	if d, err := time.ParseDuration(c.Auth.S3GroupTTL); err != nil || d <= 0 {
+		errs = append(errs, fmt.Errorf("auth.s3_group_ttl: %q is not a positive duration", c.Auth.S3GroupTTL))
+	}
+	names := map[string]bool{}
+	for i := range c.Auth.OIDC {
+		o := c.Auth.OIDC[i]
+		if err := o.Validate(); err != nil {
+			errs = append(errs, err)
+		}
+		if names[o.Name] {
+			errs = append(errs, fmt.Errorf("auth.oidc: duplicate name %q", o.Name))
+		}
+		names[o.Name] = true
 	}
 	return errors.Join(errs...)
 }
