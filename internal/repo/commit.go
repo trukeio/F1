@@ -302,7 +302,13 @@ func (r *Repo) applyDir(ctx context.Context, dir hash.Hash, dirPath string, chan
 		if exists && existing.Kind == object.KindDir && c.entry.Kind != object.KindDir {
 			return hash.Zero, false, fmt.Errorf("%w: %s exists as a directory", ErrPathConflict, full(name))
 		}
-		tc = append(tc, tree.Change{Name: []byte(name), Entry: c.entry})
+		e := c.entry
+		if exists && existing.Kind == object.KindLFS && (e.Kind == object.KindFile || e.Kind == object.KindExec) {
+			if e, err = r.lfsEntry(ctx, &existing, e); err != nil {
+				return hash.Zero, false, err
+			}
+		}
+		tc = append(tc, tree.Change{Name: []byte(name), Entry: e})
 	}
 	root, err := tree.Update(ctx, r.nodes, dir, tc)
 	if err != nil {

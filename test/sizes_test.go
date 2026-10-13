@@ -303,3 +303,66 @@ func TestSizeTransparencyGit(t *testing.T) {
 	gitCmd(t, dst, nil, "fsck", "--no-dangling")
 	checkMemory(t, s, sampleHeap(t))
 }
+
+// Size transparency (D19) over Git push and Git LFS: files of every size
+// pushed by Git (as blobs, and as LFS objects when git-lfs is installed)
+// arrive with the right content, with bounded server memory.
+func TestSizeTransparencyGitPush(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs f1d")
+	}
+	requireGit(t)
+	_, lfsErr := exec.LookPath("git-lfs")
+	s := startSubprocess(t)
+	u, _ := url.Parse(s.url)
+	u.User = url.UserPassword("admin", s.token)
+	u.Path = "/git/sizes-git.git"
+	work := filepath.Join(t.TempDir(), "work")
+	gitCmd(t, "", nil, "init", "-q", "-b", "main", work)
+	if lfsErr == nil {
+		gitCmd(t, work, nil, "lfs", "install", "--local")
+		gitCmd(t, work, nil, "lfs", "track", "lfs/*")
+		gitCmd(t, work, nil, "add", ".gitattributes")
+	}
+	want := map[string]string{} // path → SHA-256 of the content
+	for _, n := range testSizes() {
+		dirs := []string{"git"}
+		if lfsErr == nil {
+			dirs = append(dirs, "lfs")
+		}
+		for _, d := range dirs {
+			path := fmt.Sprintf("%s/%d.bin", d, n)
+			os.MkdirAll(filepath.Join(work, d), 0o755)
+			f, err := os.Create(filepath.Join(work, path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := sha256.New()
+			if _, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(testutil.Reader(fmt.Sprint("push ", d, n)), n)); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+			want[path] = hex.EncodeToString(h.Sum(nil))
+		}
+	}
+	gitCmd(t, work, nil, "add", "-A")
+	gitCmd(t, work, nil, "commit", "-q", "-m", "sizes")
+	gitCmd(t, work, nil, "push", "-q", u.String(), "main")
+	c := f1client.New(s.url, s.token)
+	for path, sum := range want {
+		rc, _, err := c.Get(ctx, "sizes-git", "main", path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := sha256.New()
+		_, err = io.Copy(h, rc)
+		rc.Close()
+		if err != nil || hex.EncodeToString(h.Sum(nil)) != sum {
+			t.Fatalf("%s: content differs (%v)", path, err)
+		}
+	}
+	if lfsErr != nil {
+		t.Log("git-lfs is not installed; LFS sizes skipped")
+	}
+	checkMemory(t, s, sampleHeap(t))
+}

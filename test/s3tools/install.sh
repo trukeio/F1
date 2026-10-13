@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Installs the pinned S3 tools (AWS CLI v2, rclone, MinIO client) into
-# <dir>/bin, verifying each download against its pinned SHA-256.
+# Installs the pinned external tools of the tests (AWS CLI v2, rclone,
+# MinIO client, Git LFS) into <dir>/bin, verifying each download against
+# its pinned SHA-256.
 #
 # Usage: test/s3tools/install.sh <dir>
 set -euo pipefail
@@ -11,6 +12,8 @@ RCLONE_VERSION=v1.75.1
 RCLONE_SHA256=982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab
 MC_VERSION=RELEASE.2025-08-13T08-35-41Z
 MC_SHA256=01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
+GITLFS_VERSION=v3.8.0
+GITLFS_SHA256=e455e00f15d9b95661b8d53498ffb0c3367962cf1ec73c31ab7369516cd6ab8d
 
 dir=$(mkdir -p "$1" && realpath "$1")
 mkdir -p "$dir/bin"
@@ -35,6 +38,12 @@ install -m 755 "$tmp/rclone/rclone-$RCLONE_VERSION-linux-amd64/rclone" "$dir/bin
 fetch "https://github.com/minio/mc/releases/download/$MC_VERSION/mc.linux-amd64.$MC_VERSION" "$MC_SHA256" "$tmp/mc"
 install -m 755 "$tmp/mc" "$dir/bin/mc"
 
+fetch "https://github.com/git-lfs/git-lfs/releases/download/$GITLFS_VERSION/git-lfs-linux-amd64-$GITLFS_VERSION.tar.gz" "$GITLFS_SHA256" "$tmp/git-lfs.tar.gz"
+mkdir "$tmp/git-lfs"
+tar -xzf "$tmp/git-lfs.tar.gz" -C "$tmp/git-lfs"
+find "$tmp/git-lfs" -name git-lfs -type f -exec install -m 755 {} "$dir/bin/git-lfs" \;
+
 "$dir/bin/aws" --version
 "$dir/bin/rclone" version | sed -n 1p
 "$dir/bin/mc" --version | sed -n 1p
+"$dir/bin/git-lfs" version

@@ -49,7 +49,7 @@ Phase 5 serves Git fetch (smart HTTP upload-pack) from F1 namespaces (doc/plan.m
 
 ### Limitations
 
-14. **LFS pointer blobs can't be fetched lazily yet.** A lazy fetch of an LFS pointer blob by id is not supported, because pointer bytes are not addressable on their own. LFS arrives with push in phase 6, which will make pointer blobs addressable.
+14. **LFS pointer blobs can't be fetched lazily yet.** A lazy fetch of an LFS pointer blob by id is not supported, because pointer bytes are not addressable on their own. LFS arrives with push in phase 6, which will make pointer blobs addressable. (Resolved in phase 6: pointer blobs are stored as Files, ADR-0009.)
 
 ## Consequences
 

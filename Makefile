@@ -38,6 +38,7 @@ fuzz:
 	go test ./internal/api/s3 -run '^$$' -fuzz FuzzChunked -fuzztime $(FUZZTIME)
 	go test ./internal/api/git -run '^$$' -fuzz FuzzObjects -fuzztime $(FUZZTIME)
 	go test ./internal/api/git -run '^$$' -fuzz FuzzPktLine -fuzztime $(FUZZTIME)
+	go test ./internal/api/git -run '^$$' -fuzz FuzzReadPack -fuzztime $(FUZZTIME)
 
 ci: fmt-check vet staticcheck test smoke
 

@@ -18,9 +18,10 @@ import (
 // the same ids. Blob ids come from DigestRecords, so export never reads
 // file content. An Exporter is not safe for concurrent use.
 type Exporter struct {
-	rp   *repo.Repo
-	db   *cache.DB
-	memo map[memoKey]SHA
+	rp    *repo.Repo
+	db    *cache.DB
+	memo  map[memoKey]SHA
+	blobs map[hash.Hash]SHA // blob ids of Files, for this exporter's lifetime
 }
 
 type memoKey struct {
@@ -30,7 +31,7 @@ type memoKey struct {
 
 // NewExporter returns an exporter for a repository.
 func NewExporter(rp *repo.Repo) *Exporter {
-	return &Exporter{rp: rp, db: rp.Store().Cache(), memo: map[memoKey]SHA{}}
+	return &Exporter{rp: rp, db: rp.Store().Cache(), memo: map[memoKey]SHA{}, blobs: map[hash.Hash]SHA{}}
 }
 
 func (x *Exporter) lookup(ctx context.Context, h hash.Hash, kind cache.GitKind) (SHA, bool, error) {
@@ -285,11 +286,22 @@ func (x *Exporter) entrySHA(ctx context.Context, e *object.Entry) (SHA, error) {
 // fileSHA returns the Git blob id of a File from its DigestRecord, computing
 // the record if it is missing.
 func (x *Exporter) fileSHA(ctx context.Context, file hash.Hash) (SHA, error) {
-	if d, ok, err := x.db.Digest(ctx, file); err != nil || ok {
-		return SHA(d.SHA1Git), err
+	if s, ok := x.blobs[file]; ok {
+		return s, nil
 	}
-	d, err := x.rp.Digests(ctx, file)
-	return SHA(d.SHA1Git), err
+	d, ok, err := x.db.Digest(ctx, file)
+	if err != nil {
+		return SHA{}, err
+	}
+	if !ok {
+		dg, err := x.rp.Digests(ctx, file)
+		if err != nil {
+			return SHA{}, err
+		}
+		d.SHA1Git = dg.SHA1Git
+	}
+	x.blobs[file] = SHA(d.SHA1Git)
+	return SHA(d.SHA1Git), nil
 }
 
 // TreeSHA returns the Git id of an F1 tree; raw, if set, is the GitRaw
@@ -307,6 +319,12 @@ func (x *Exporter) TreeSHA(ctx context.Context, root hash.Hash, raw *hash.Hash) 
 		return SHA{}, err
 	}
 	s := Hash(TypeTree, data)
+	if raw != nil {
+		// Record the F1 tree too, so the Git id resolves to both.
+		if err := x.record(ctx, root, cache.GitRawRoot, s); err != nil {
+			return SHA{}, err
+		}
+	}
 	return s, x.record(ctx, key, kind, s)
 }
 
@@ -386,23 +404,29 @@ func sameEntries(raw, canon []TreeEntry) bool {
 // Resolve returns the F1 object for a Git id: a commit, tree, tag or GitRaw
 // recorded in git_map, or a File whose blob id is in digests.
 func (x *Exporter) Resolve(ctx context.Context, s SHA) (Object, bool, error) {
-	h, kind, ok, err := x.db.GitObject(ctx, s)
+	rows, err := x.db.GitObjects(ctx, s)
 	if err != nil {
 		return Object{}, false, err
 	}
-	if ok {
-		switch kind {
+	var tree Object
+	for _, r := range rows {
+		switch r.Kind {
 		case cache.GitCommit:
-			return Object{Type: TypeCommit, SHA: s, F1: h}, true, nil
+			return Object{Type: TypeCommit, SHA: s, F1: r.F1}, true, nil
 		case cache.GitTag:
-			return Object{Type: TypeTag, SHA: s, F1: h}, true, nil
+			return Object{Type: TypeTag, SHA: s, F1: r.F1}, true, nil
 		case cache.GitTree:
-			return Object{Type: TypeTree, SHA: s, F1: h}, true, nil
+			return Object{Type: TypeTree, SHA: s, F1: r.F1}, true, nil
 		case cache.GitRawTree:
-			// The F1 tree is not recorded with the GitRaw; the raw bytes
-			// alone are the object.
-			return Object{Type: TypeTree, SHA: s, Raw: &h}, true, nil
+			h := r.F1
+			tree.Type, tree.SHA, tree.Raw = TypeTree, s, &h
+		case cache.GitRawRoot:
+			tree.Type, tree.SHA, tree.F1 = TypeTree, s, r.F1
 		}
+	}
+	if tree.Raw != nil {
+		// A non-canonical tree: its bytes, and its F1 tree if recorded.
+		return tree, true, nil
 	}
 	f, ok, err := x.db.FileBySHA1Git(ctx, s)
 	if err != nil || !ok {

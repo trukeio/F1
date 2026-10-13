@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -25,9 +26,10 @@ type Importer struct {
 
 // Imported is a Git object converted to F1.
 type Imported struct {
-	Type Type
-	F1   hash.Hash  // File, tree root, commit or tag
-	Raw  *hash.Hash // trees only: GitRaw with the exact bytes, if not canonical
+	Type    Type
+	F1      hash.Hash  // File, tree root, commit or tag
+	Raw     *hash.Hash // trees only: GitRaw with the exact bytes, if not canonical
+	Pointer []byte     // blobs only: the bytes, if the blob is an LFS pointer
 }
 
 // NewImporter returns an importer into rp.
@@ -35,23 +37,93 @@ func NewImporter(rp *repo.Repo) *Importer {
 	return &Importer{rp: rp, x: NewExporter(rp), objs: map[SHA]Imported{}}
 }
 
-// Lookup returns an imported object.
+// Lookup returns an object imported by this importer.
 func (im *Importer) Lookup(s SHA) (Imported, bool) {
 	o, ok := im.objs[s]
 	return o, ok
 }
 
+// Known returns an object imported by this importer or already in the
+// repository (pushes reference existing objects, and thin packs delta
+// against them).
+func (im *Importer) Known(ctx context.Context, s SHA) (Imported, bool, error) {
+	if o, ok := im.objs[s]; ok {
+		return o, true, nil
+	}
+	o, ok, err := im.x.Resolve(ctx, s)
+	if err != nil || !ok {
+		return Imported{}, false, err
+	}
+	imp := Imported{Type: o.Type, F1: o.F1, Raw: o.Raw}
+	switch o.Type {
+	case TypeTree:
+		if imp.F1.IsZero() {
+			return Imported{}, false, nil // raw bytes without a known F1 tree
+		}
+	case TypeBlob:
+		imp.F1 = o.Blob.Target
+		size, err := im.rp.FileSize(ctx, imp.F1)
+		if err != nil {
+			return Imported{}, false, err
+		}
+		if size <= maxPointerSize {
+			rd, err := im.rp.OpenFile(ctx, imp.F1)
+			if err != nil {
+				return Imported{}, false, err
+			}
+			data, err := io.ReadAll(rd)
+			if err != nil {
+				return Imported{}, false, err
+			}
+			if _, ok := ParsePointer(data); ok {
+				imp.Pointer = data
+			}
+		}
+	}
+	im.objs[s] = imp
+	return imp, true, nil
+}
+
 // Blob imports blob content of the given size; its Git id must be s.
 func (im *Importer) Blob(ctx context.Context, s SHA, r io.Reader, size int64) error {
-	res, err := im.rp.Ingest(ctx, r, size)
+	got, err := im.BlobStream(ctx, r, size)
 	if err != nil {
 		return err
 	}
-	if SHA(res.Digests.SHA1Git) != s {
-		return fmt.Errorf("git: blob %s has id %s", s, SHA(res.Digests.SHA1Git))
+	if got != s {
+		return fmt.Errorf("git: blob %s has id %s", s, got)
 	}
-	im.objs[s] = Imported{Type: TypeBlob, F1: res.File}
 	return nil
+}
+
+// BlobStream imports blob content of the given size and returns its Git
+// id, computed with collision detection.
+func (im *Importer) BlobStream(ctx context.Context, r io.Reader, size int64) (SHA, error) {
+	var ptr []byte
+	if size <= maxPointerSize {
+		data := make([]byte, size)
+		if _, err := io.ReadFull(r, data); err != nil {
+			return SHA{}, err
+		}
+		if _, ok := ParsePointer(data); ok {
+			ptr = data
+		}
+		r = bytes.NewReader(data)
+	}
+	h := newObjectHasher(TypeBlob, size)
+	res, err := im.rp.Ingest(ctx, io.TeeReader(r, h), size)
+	if err != nil {
+		return SHA{}, err
+	}
+	s, err := h.sum()
+	if err != nil {
+		return SHA{}, err
+	}
+	if SHA(res.Digests.SHA1Git) != s {
+		return SHA{}, fmt.Errorf("git: blob id mismatch (%s, %s)", s, SHA(res.Digests.SHA1Git))
+	}
+	im.objs[s] = Imported{Type: TypeBlob, F1: res.File, Pointer: ptr}
+	return s, nil
 }
 
 // Tree imports a tree object with id s. Its blobs and subtrees must be
@@ -75,20 +147,31 @@ func (im *Importer) Tree(ctx context.Context, s SHA, data []byte) error {
 		case object.KindGitlink:
 			e.Attrs = &object.Attrs{GitSHA1: append([]byte{}, ge.SHA[:]...)}
 		case object.KindDir:
-			child, ok := im.objs[ge.SHA]
+			child, ok, err := im.Known(ctx, ge.SHA)
+			if err != nil {
+				return err
+			}
 			if !ok || child.Type != TypeTree {
-				return fmt.Errorf("git: tree %s: subtree %s not imported", s, ge.SHA)
+				return fmt.Errorf("git: tree %s: missing subtree %s", s, ge.SHA)
 			}
 			e.Target = child.F1
 			if child.Raw != nil {
 				e.Attrs = &object.Attrs{GitRaw: child.Raw}
 			}
 		default:
-			blob, ok := im.objs[ge.SHA]
+			blob, ok, err := im.Known(ctx, ge.SHA)
+			if err != nil {
+				return err
+			}
 			if !ok || blob.Type != TypeBlob {
-				return fmt.Errorf("git: tree %s: blob %s not imported", s, ge.SHA)
+				return fmt.Errorf("git: tree %s: missing blob %s", s, ge.SHA)
 			}
 			e.Target = blob.F1
+			if blob.Pointer != nil && kind != object.KindSymlink {
+				if e, err = im.lfsEntry(ctx, ge, kind, blob.Pointer); err != nil {
+					return err
+				}
+			}
 		}
 		entries = append(entries, e)
 	}
@@ -129,15 +212,21 @@ func (im *Importer) Commit(ctx context.Context, s SHA, data []byte) error {
 		return fmt.Errorf("git: commit %s: %w", s, err)
 	}
 	c := pc.Commit
-	t, ok := im.objs[pc.Tree]
+	t, ok, err := im.Known(ctx, pc.Tree)
+	if err != nil {
+		return err
+	}
 	if !ok || t.Type != TypeTree {
-		return fmt.Errorf("git: commit %s: tree %s not imported", s, pc.Tree)
+		return fmt.Errorf("git: commit %s: missing tree %s", s, pc.Tree)
 	}
 	c.Tree, c.GitTreeRaw = t.F1, t.Raw
 	for _, p := range pc.Parents {
-		po, ok := im.objs[p]
+		po, ok, err := im.Known(ctx, p)
+		if err != nil {
+			return err
+		}
 		if !ok || po.Type != TypeCommit {
-			return fmt.Errorf("git: commit %s: parent %s not imported", s, p)
+			return fmt.Errorf("git: commit %s: missing parent %s", s, p)
 		}
 		c.Parents = append(c.Parents, po.F1)
 	}
@@ -175,9 +264,12 @@ func (im *Importer) Tag(ctx context.Context, s SHA, data []byte) error {
 		return fmt.Errorf("git: tag %s: %w", s, err)
 	}
 	t := pt.Tag
-	target, ok := im.objs[pt.Object]
+	target, ok, err := im.Known(ctx, pt.Object)
+	if err != nil {
+		return err
+	}
 	if !ok || target.Type.String() != t.TargetType {
-		return fmt.Errorf("git: tag %s: target %s (%s) not imported", s, pt.Object, t.TargetType)
+		return fmt.Errorf("git: tag %s: missing target %s (%s)", s, pt.Object, t.TargetType)
 	}
 	t.Object = target.F1
 	if t.TargetType == object.TagTargetTree && target.Raw != nil {

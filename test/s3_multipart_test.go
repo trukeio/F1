@@ -26,6 +26,7 @@ import (
 type genReader struct {
 	seed      uint64
 	size, off int64
+	base      int64 // this reader is bytes [base, base+size) of the stream
 }
 
 func newGen(seed string, size int64) *genReader {
@@ -54,7 +55,7 @@ func (g *genReader) ReadAt(p []byte, off int64) (int, error) {
 	n := int(min(int64(len(p)), g.size-off))
 	var w [8]byte
 	for i := range n {
-		o := off + int64(i)
+		o := g.base + off + int64(i)
 		if i == 0 || o%8 == 0 {
 			binary.LittleEndian.PutUint64(w[:], splitmix(g.seed+uint64(o/8)))
 		}

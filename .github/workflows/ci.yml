@@ -18,7 +18,7 @@ jobs:
           go-version-file: go.mod
       - run: make ci
 
-  # External S3 clients (doc/plan.md, phase 4): AWS CLI, rclone, mc.
+  # External clients: AWS CLI, rclone, mc (phase 4) and Git LFS (phase 6).
   s3tools:
     runs-on: ubuntu-latest
     steps:
@@ -27,7 +27,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: test/s3tools/install.sh "$RUNNER_TEMP/s3tools"
-      - run: PATH="$RUNNER_TEMP/s3tools/bin:$PATH" F1_REQUIRE_S3TOOLS=1 go test ./test -run TestS3Tools -v
+      - run: PATH="$RUNNER_TEMP/s3tools/bin:$PATH" F1_REQUIRE_S3TOOLS=1 go test ./test -run 'TestS3Tools|TestGitLFS' -v
 
   # The selected Ceph s3-tests (test/s3tests.txt).
   s3tests:

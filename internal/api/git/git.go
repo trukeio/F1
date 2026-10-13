@@ -83,12 +83,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) error {
 	if err != nil || !rp.Meta().Git || !(g.Any(serverdb.PermRead) || g.Any(serverdb.PermWrite)) {
 		return errNotFound // inaccessible namespaces look like missing ones (ADR-0006)
 	}
+	if strings.HasPrefix(rest, "info/lfs/") {
+		return s.lfs(w, r, rp, caller, g, strings.TrimPrefix(rest, "info/lfs/"))
+	}
 	service := r.URL.Query().Get("service")
+	push := false
 	switch {
 	case r.Method == http.MethodGet && rest == "info/refs" && service == "git-upload-pack",
 		r.Method == http.MethodPost && rest == "git-upload-pack":
-	case rest == "info/refs" && service == "git-receive-pack", rest == "git-receive-pack":
-		return &httpError{http.StatusForbidden, "push is not supported yet"}
+	case r.Method == http.MethodGet && rest == "info/refs" && service == "git-receive-pack",
+		r.Method == http.MethodPost && rest == "git-receive-pack":
+		push = true
 	default:
 		return errNotFound
 	}
@@ -96,9 +101,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) error {
 	if !g.Whole(serverdb.PermRead) {
 		return &httpError{http.StatusForbidden, "Git access needs read permission on the whole namespace"}
 	}
+	if push && !g.Any(serverdb.PermWrite) {
+		return &httpError{http.StatusForbidden, "push needs write permission"}
+	}
 	version := protocolVersion(r)
 	ctx := r.Context()
 	if r.Method == http.MethodGet {
+		if push {
+			return s.advertiseReceive(ctx, w, rp, version)
+		}
 		return s.advertise(ctx, w, rp, version)
 	}
 	body := io.Reader(r.Body)
@@ -109,6 +120,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) error {
 		}
 		defer zr.Close()
 		body = zr
+	}
+	if push {
+		return s.receive(ctx, w, body, rp, caller, g)
 	}
 	if version == 2 {
 		return s.serveV2(ctx, w, body, rp)

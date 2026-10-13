@@ -18,6 +18,7 @@ const (
 	GitTree    GitKind = 2 // a canonical export of an F1 tree
 	GitTag     GitKind = 3
 	GitRawTree GitKind = 4 // a GitRaw object's exact tree bytes
+	GitRawRoot GitKind = 5 // the F1 tree a GitRaw tree describes
 )
 
 // GitSHA returns the Git id an F1 object exports as, if it is recorded.
@@ -44,19 +45,28 @@ func (c *DB) PutGitSHA(ctx context.Context, f1 hash.Hash, kind GitKind, sha [20]
 	return nil
 }
 
-// GitObject returns an F1 object that exports as the Git id sha, if one is
-// recorded (several F1 objects may map to one Git object).
-func (c *DB) GitObject(ctx context.Context, sha [20]byte) (hash.Hash, GitKind, bool, error) {
-	var h hash.Hash
-	var b []byte
-	var kind int
-	err := c.db.QueryRowContext(ctx, `SELECT f1, kind FROM git_map WHERE sha1 = ? LIMIT 1`, sha[:]).Scan(&b, &kind)
-	if errors.Is(err, sql.ErrNoRows) {
-		return h, 0, false, nil
-	}
+// GitRow is a git_map row.
+type GitRow struct {
+	F1   hash.Hash
+	Kind GitKind
+}
+
+// GitObjects returns every F1 object recorded for the Git id sha.
+func (c *DB) GitObjects(ctx context.Context, sha [20]byte) ([]GitRow, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT f1, kind FROM git_map WHERE sha1 = ?`, sha[:])
 	if err != nil {
-		return h, 0, false, fmt.Errorf("cache: %w", err)
+		return nil, fmt.Errorf("cache: %w", err)
 	}
-	copy(h[:], b)
-	return h, GitKind(kind), true, nil
+	defer rows.Close()
+	var out []GitRow
+	for rows.Next() {
+		var b []byte
+		var r GitRow
+		if err := rows.Scan(&b, &r.Kind); err != nil {
+			return nil, fmt.Errorf("cache: %w", err)
+		}
+		copy(r.F1[:], b)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

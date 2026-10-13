@@ -514,7 +514,7 @@ Table `git_map(f1_hash, git_sha1, kind)` in `cache.db`, with indexes in both dir
 
 ### Ref and lock checks on push
 
-Each ref update in a push goes through `UpdateRef`, which enforces write ACLs and locks on the diff between old and new commit. With `atomic`, all ref updates are applied in one multi-ref update or none.
+Each ref update in a push goes through `UpdateRef`, which enforces write ACLs and locks on the diff between old and new commit. With `atomic`, all ref updates are applied in one multi-ref update or none. Implementation decisions for push and LFS (pack parsing, import order, carry-forward on the branch head, LFS pointer handling) are in ADR-0009.
 
 ### Pack generation
 
@@ -687,8 +687,8 @@ testdata/                golden vectors, Git fixture repositories
 | SQLite | `modernc.org/sqlite` |
 | S3 client for tests only | `github.com/aws/aws-sdk-go-v2` (service/s3), imported only from `_test.go` files and `test/` |
 | JWT and JWKS | `github.com/go-jose/go-jose/v4` |
-| Git pack and pkt-line parsing | F1's own code for fetch (ADR-0008); `github.com/go-git/go-git/v5/plumbing/...` for pack parsing with deltas only if phase 6 needs it |
-| SHA-1 with collision detection (Git import) | `github.com/pjbgf/sha1cd` (already a go-git dependency) |
+| Git pack and pkt-line parsing | F1's own code, with bounded memory for any blob size (ADR-0008, ADR-0009); go-git is not used |
+| SHA-1 with collision detection (Git import) | `github.com/pjbgf/sha1cd` |
 | TOML | `github.com/BurntSushi/toml` |
 | ULID | `github.com/oklog/ulid/v2` |
 | 3-way text merge | evaluate in phase 7; write an ADR |
