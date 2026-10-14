@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
 	"time"
 
@@ -180,11 +179,7 @@ func (r *Repo) lockCheck(refs []string, p, principal string, mode policy.LockMod
 // patterns do); a glob with "/" matches the whole path.
 func RequiresLock(mode policy.LockMode, p string) bool {
 	for _, g := range mode.Required {
-		target := p
-		if !strings.Contains(g, "/") {
-			target = path.Base(p)
-		}
-		if ok, _ := path.Match(g, target); ok {
+		if policy.MatchGlob(g, p) {
 			return true
 		}
 	}

@@ -366,3 +366,33 @@ func (d *digester) run(ctx context.Context, p *pipeline) {
 		p.release(j)
 	}
 }
+
+// FileHash returns the File hash that Ingest would return for r, without
+// storing anything. It runs in one goroutine with one chunk buffer.
+func FileHash(r io.Reader) (f1hash.Hash, uint64, error) {
+	builder := object.NewFileBuilder(func(x *object.FileIndex) (f1hash.Hash, error) {
+		h, _, err := object.Hash(x)
+		return h, err
+	})
+	c := chunk.New(r)
+	var size uint64
+	for {
+		data, err := c.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return f1hash.Zero, 0, err
+		}
+		size += uint64(len(data))
+		if err := builder.Add(object.Ref{Hash: object.ChunkHash(data), Size: uint64(len(data))}); err != nil {
+			return f1hash.Zero, 0, err
+		}
+	}
+	f, err := builder.Finish()
+	if err != nil {
+		return f1hash.Zero, 0, err
+	}
+	h, _, err := object.Hash(f)
+	return h, size, err
+}

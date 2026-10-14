@@ -131,7 +131,7 @@ func TestLockExpiryAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	commitAs(t, r, "main", "user:alice", map[string]string{"f": "1"})
-	if _, err := r.LockPath(ctx, "main", "f", "user:alice", 50*time.Millisecond); err != nil {
+	if _, err := r.LockPath(ctx, "main", "f", "user:alice", time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.LockPath(ctx, "main", "g", "user:alice", 0); err != nil {
@@ -146,7 +146,8 @@ func TestLockExpiryAndPersistence(t *testing.T) {
 	if n := len(r.Locks("main", "")); n != 2 {
 		t.Fatalf("%d locks after reopen, want 2", n)
 	}
-	time.Sleep(80 * time.Millisecond)
+	// The TTL leaves room for a slow reopen under load.
+	time.Sleep(1100 * time.Millisecond)
 	if locks := r.Locks("main", ""); len(locks) != 1 || locks[0].Path != "g" {
 		t.Fatalf("locks after expiry: %+v", locks)
 	}

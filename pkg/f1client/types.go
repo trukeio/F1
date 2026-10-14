@@ -16,6 +16,9 @@ type NamespaceConfig struct {
 	Locks      string `json:"locks"`
 	Git        bool   `json:"git"`
 	DefaultRef string `json:"default_ref"`
+	// Merge maps globs to "text" or "binary", overriding the native
+	// client's text detection.
+	Merge map[string]string `json:"merge,omitempty"`
 }
 
 // Namespace describes a namespace (repository).

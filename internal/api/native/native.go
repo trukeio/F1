@@ -330,7 +330,7 @@ func nsInfo(name string, rp *repo.Repo) api.Namespace {
 	m := rp.Meta()
 	return api.Namespace{Name: name, UUID: m.UUID, Frozen: rp.Frozen(), Config: api.NamespaceConfig{
 		Layout: m.Layout, Retention: m.Retention, Autocommit: m.Autocommit, Branches: m.Branches,
-		Locks: m.Locks, Git: m.Git, DefaultRef: m.DefaultRef,
+		Locks: m.Locks, Git: m.Git, DefaultRef: m.DefaultRef, Merge: m.Merge,
 	}}
 }
 
@@ -379,7 +379,7 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 	case req.Config != nil:
 		c := req.Config
 		cfg = policy.Config{Layout: c.Layout, Retention: c.Retention, Autocommit: c.Autocommit, Branches: c.Branches,
-			Locks: c.Locks, Git: c.Git, DefaultRef: c.DefaultRef}
+			Locks: c.Locks, Git: c.Git, DefaultRef: c.DefaultRef, Merge: c.Merge}
 	}
 	if err := policy.ValidNamespace(req.Name); err != nil {
 		return badRequest("%v", err)

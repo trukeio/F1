@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trukeio/f1/internal/client"
 	"github.com/trukeio/f1/internal/testutil"
 	"github.com/trukeio/f1/pkg/f1client"
 )
@@ -56,6 +57,9 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if binDir != "" {
 		os.RemoveAll(binDir)
+	}
+	if f1Path != "" {
+		os.RemoveAll(filepath.Dir(f1Path))
 	}
 	os.Exit(code)
 }
@@ -365,4 +369,166 @@ func TestSizeTransparencyGitPush(t *testing.T) {
 		t.Log("git-lfs is not installed; LFS sizes skipped")
 	}
 	checkMemory(t, s, sampleHeap(t))
+}
+
+// sizeLine returns line i (64 bytes) of the client size test's text, with
+// the tag of an edit if there is one.
+func sizeLine(i int64, edits map[int64]string) string {
+	tag := "base"
+	if e, ok := edits[i]; ok {
+		tag = e
+	}
+	return fmt.Sprintf("%-6s %012d %s\n", tag, i, strings.Repeat("x", 43))
+}
+
+// lineGen generates the client size test's text.
+type lineGen struct {
+	i     int64
+	buf   []byte
+	edits map[int64]string
+}
+
+func (g *lineGen) Read(p []byte) (int, error) {
+	for len(g.buf) < len(p) {
+		g.buf = append(g.buf, sizeLine(g.i, g.edits)...)
+		g.i++
+	}
+	n := copy(p, g.buf)
+	g.buf = append(g.buf[:0], g.buf[n:]...)
+	return n, nil
+}
+
+func sizeText(n int64, edits map[int64]string) io.Reader {
+	return io.LimitReader(&lineGen{edits: edits}, n)
+}
+
+func sha256Of(t *testing.T, r io.Reader) string {
+	t.Helper()
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func sha256File(t *testing.T, name string) string {
+	t.Helper()
+	f, err := os.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	return sha256Of(t, f)
+}
+
+// Size transparency of the native client: checkout, commit, push, pull,
+// and a three-way text merge of concurrent edits (rebased local commit),
+// for every size.
+func TestSizeTransparencyClient(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs f1d")
+	}
+	s := startSubprocess(t)
+	admin := f1client.New(s.url, s.token)
+	if _, err := admin.CreateNamespace(ctx, f1client.CreateNamespaceRequest{Name: "sizes-client", Preset: "svn"}); err != nil {
+		t.Fatal(err)
+	}
+	clientPeak := sampleHeap(t)
+	root := t.TempDir()
+	opts := client.Options{Token: s.token}
+	wc1, err := client.Clone(ctx, s.url, "sizes-client", filepath.Join(root, "1"), "", nil, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wc1.Close()
+	wc2, err := client.Clone(ctx, s.url, "sizes-client", filepath.Join(root, "2"), "", nil, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wc2.Close()
+	write := func(wc *client.WC, path string, r io.Reader) {
+		t.Helper()
+		f, err := os.Create(filepath.Join(wc.Root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(f, r); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitPush := func(wc *client.WC, msg string) {
+		t.Helper()
+		if _, err := wc.Commit(ctx, msg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := wc.Push(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	serverSHA := func(path string) string {
+		t.Helper()
+		rc, _, err := admin.Get(ctx, "sizes-client", "main", path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rc.Close()
+		return sha256Of(t, rc)
+	}
+	for _, n := range testSizes() {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			path := fmt.Sprintf("%d.txt", n)
+			write(wc1, path, sizeText(n, nil))
+			if err := wc1.Add(ctx, []string{path}); err != nil {
+				t.Fatal(err)
+			}
+			commitPush(wc1, "add "+path)
+			want := sha256Of(t, sizeText(n, nil))
+			if got := serverSHA(path); got != want {
+				t.Fatal("pushed content differs")
+			}
+			if _, err := wc2.Pull(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := sha256File(t, filepath.Join(wc2.Root, path)); got != want {
+				t.Fatal("checked out content differs")
+			}
+			lines := n / 64
+			if lines < 20 {
+				return
+			}
+			// Concurrent edits far apart: wc1 pushes first, wc2's
+			// commit is rebased with a three-way merge.
+			k1, k2 := lines/10, lines*9/10
+			write(wc1, path, sizeText(n, map[int64]string{k1: "mine"}))
+			commitPush(wc1, "edit 1")
+			write(wc2, path, sizeText(n, map[int64]string{k2: "theirs"}))
+			if _, err := wc2.Commit(ctx, "edit 2"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := wc2.Push(ctx); err != client.ErrRemoteChanged {
+				t.Fatalf("push before pull: %v", err)
+			}
+			res, err := wc2.Pull(ctx)
+			if err != nil || res.Rebased != 1 || len(res.Conflicts) != 0 {
+				t.Fatalf("pull = %+v, %v", res, err)
+			}
+			if _, err := wc2.Push(ctx); err != nil {
+				t.Fatal(err)
+			}
+			merged := sha256Of(t, sizeText(n, map[int64]string{k1: "mine", k2: "theirs"}))
+			if got := serverSHA(path); got != merged {
+				t.Fatal("merged content differs")
+			}
+			if _, err := wc1.Pull(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := sha256File(t, filepath.Join(wc1.Root, path)); got != merged {
+				t.Fatal("pulled merge differs")
+			}
+		})
+	}
+	checkMemory(t, s, clientPeak)
 }

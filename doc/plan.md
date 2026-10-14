@@ -541,10 +541,12 @@ Working copy:
 Pull and merge:
 - Fetch only trees within the sparse patterns, and files on checkout.
 - Merge per path: if only one side changed, take it. If both changed, the merge strategy depends on content type, never on size:
-  - Text (valid UTF-8, no NUL bytes in the first 8 KiB; overridable per glob in `f1repo.toml` with `merge = text|binary`): 3-way line merge with conflict markers. The implementation must use linear-space diff (Myers with divide-and-conquer or patience diff on line hashes) so large text files merge with bounded memory.
+  - Text (valid UTF-8, no NUL bytes in the first 8 KiB; overridable per glob in the `[merge]` table of `f1repo.toml`, e.g. `"*.svg" = "text"`): 3-way line merge with conflict markers. The implementation must use linear-space diff (Myers with divide-and-conquer or patience diff on line hashes) so large text files merge with bounded memory.
   - Binary: keep both as `<name>.mine` and `<name>.theirs` and mark a conflict.
 - Push = upload missing objects, `POST /ns/{ns}/commits`, which performs the ref CAS. On CAS failure, the client tells the user to pull. If the server answers that objects are missing (they were collected by GC after `objects/missing` reported them present), the client uploads them and retries, up to a fixed number of times.
 - The native client needs read permission on the whole namespace (D13). Sparse checkout limits download size; it is not an access-control mechanism.
+
+Implementation decisions (working copy files, path-addressed reads without pristine copies, rebase of local commits path by path, conflict resolution with `add` and `rm`, the two-level diff that bounds merge memory, and the refusal of client-uploaded DigestRecords) are in ADR-0010.
 
 ## Retention and garbage collection
 
@@ -670,6 +672,7 @@ internal/api/s3/         S3 API (SigV4 verification is in internal/auth)
 internal/api/git/        Git smart HTTP, pack export/import, object mapping
 internal/api/lfs/        Git LFS batch and locking API
 internal/client/         working copy, sparse, merge
+internal/client/textmerge/  line diff, 3-way merge, unified diff (bounded memory)
 pkg/f1client/            public Go SDK for the native API
 doc/adr/                 architecture decision records
 doc/format.md            on-disk format specification (written in phase 1)
@@ -691,7 +694,7 @@ testdata/                golden vectors, Git fixture repositories
 | SHA-1 with collision detection (Git import) | `github.com/pjbgf/sha1cd` |
 | TOML | `github.com/BurntSushi/toml` |
 | ULID | `github.com/oklog/ulid/v2` |
-| 3-way text merge | evaluate in phase 7; write an ADR |
+| 3-way text merge | F1's own code, with bounded memory for any file size (ADR-0010) |
 
 Everything else uses the standard library (`net/http`, `log/slog`, `crypto/*`, `hash/crc32`).
 

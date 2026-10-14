@@ -9,6 +9,7 @@ all: build
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/f1d ./cmd/f1d
+	go build -ldflags "$(LDFLAGS)" -o bin/f1 ./cmd/f1
 
 # The race pass scales down large single-goroutine tests; the second pass
 # runs them at full size.
@@ -39,6 +40,7 @@ fuzz:
 	go test ./internal/api/git -run '^$$' -fuzz FuzzObjects -fuzztime $(FUZZTIME)
 	go test ./internal/api/git -run '^$$' -fuzz FuzzPktLine -fuzztime $(FUZZTIME)
 	go test ./internal/api/git -run '^$$' -fuzz FuzzReadPack -fuzztime $(FUZZTIME)
+	go test ./internal/client/textmerge -run '^$$' -fuzz FuzzMerge -fuzztime $(FUZZTIME)
 
 ci: fmt-check vet staticcheck test smoke
 

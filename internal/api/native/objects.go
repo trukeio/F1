@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/trukeio/f1/internal/hash"
+	"github.com/trukeio/f1/internal/object"
 	"github.com/trukeio/f1/internal/pack"
 	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/serverdb"
@@ -70,6 +71,10 @@ func (s *Server) missingObjects(w http.ResponseWriter, r *http.Request) error {
 // hash, and every object's references must be stored first (D9: send
 // objects in dependency order). The objects are durable when the response
 // is sent.
+//
+// DigestRecords are refused: they assert a File's Git, LFS and S3 digests,
+// which other protocols trust (D21), so only the server writes them. Files
+// committed by POST /commits get theirs in the background.
 func (s *Server) uploadObjects(w http.ResponseWriter, r *http.Request) error {
 	rp, _, g, err := s.ns(r)
 	if err != nil {
@@ -80,6 +85,9 @@ func (s *Server) uploadObjects(w http.ResponseWriter, r *http.Request) error {
 	}
 	stored := 0
 	err = pack.Scan(r.Body, func(rec pack.Record) error {
+		if rec.Type == object.TypeDigestRecord {
+			return badRequest("digest records are computed by the server; do not upload them")
+		}
 		if _, err := rec.Payload(nil); err != nil {
 			return badRequest("%v", err)
 		}
@@ -222,6 +230,15 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) error {
 		Author: person(c), Message: req.Message, Principal: c.Principal, CheckPath: writeCheck(g)})
 	if err != nil {
 		return err
+	}
+	// Uploaded Files have no DigestRecord yet.
+	for _, ch := range changes {
+		if ch.Op != repo.OpPut {
+			continue
+		}
+		if _, ok, err := rp.Store().Cache().Digest(r.Context(), ch.Entry.Target); err == nil && !ok {
+			rp.DigestLater(ch.Entry.Target)
+		}
 	}
 	return writeJSON(w, api.CommitResult{Commit: h.String()})
 }

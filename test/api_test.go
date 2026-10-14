@@ -261,6 +261,18 @@ func TestObjectAPI(t *testing.T) {
 	if got := get(t, e.alice, "proj", c.Commit, "a/b.txt"); got != string(data) {
 		t.Fatalf("content = %q", got)
 	}
+	// Digest records are written by the server only: a forged one would
+	// make Git, LFS and S3 trust false digests.
+	forged := &object.DigestRecord{File: fileHash, SHA256: [32]byte{1}}
+	dh, dbytes, _ := object.Hash(forged)
+	var fb bytes.Buffer
+	fw, _ := pack.NewWriter(&fb)
+	drec, _ := pack.NewRecord(object.TypeDigestRecord, dh, dbytes, nil)
+	fw.Add(drec)
+	fw.Finish()
+	if _, err := e.alice.UploadObjects(ctx, "proj", &fb); f1client.Code(err) != f1client.CodeBadRequest {
+		t.Fatalf("digest record upload: %v", err)
+	}
 	typ, payload, err := e.alice.GetObject(ctx, "proj", fileHash.String())
 	if err != nil || typ != "file" || !bytes.Equal(payload, fileBytes) {
 		t.Fatalf("get object: %s %v", typ, err)

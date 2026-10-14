@@ -24,6 +24,10 @@ type Config struct {
 	Locks      string `toml:"locks"`
 	Git        bool   `toml:"git"`
 	DefaultRef string `toml:"default_ref"`
+	// Merge overrides the native client's text detection per glob:
+	// "text" or "binary" (ADR-0010). A glob without "/" matches the file
+	// name in any directory.
+	Merge map[string]string `toml:"merge,omitempty"`
 }
 
 // Default returns the defaults for keys absent from a configuration: the Git
@@ -112,6 +116,17 @@ func ParseLocks(s string) (LockMode, error) {
 	return LockMode{}, fmt.Errorf("locks: %q is not one of off, exclusive, required:<globs>", s)
 }
 
+// MatchGlob reports whether a path matches a lock or merge glob. A glob
+// without "/" matches the file name in any directory (as svn:needs-lock
+// patterns do); a glob with "/" matches the whole path.
+func MatchGlob(glob, p string) bool {
+	if !strings.Contains(glob, "/") {
+		p = path.Base(p)
+	}
+	ok, _ := path.Match(glob, p)
+	return ok
+}
+
 // Validate checks the configuration, including D12 (Git namespaces need
 // layout = tree and retention = all).
 func (c Config) Validate() error {
@@ -128,6 +143,14 @@ func (c Config) Validate() error {
 	}
 	if err := ValidRefName("heads/" + c.DefaultRef); err != nil {
 		errs = append(errs, fmt.Errorf("default_ref: %w", err))
+	}
+	for g, v := range c.Merge {
+		if _, err := path.Match(g, ""); err != nil {
+			errs = append(errs, fmt.Errorf("merge: bad glob %q: %w", g, err))
+		}
+		if v != "text" && v != "binary" {
+			errs = append(errs, fmt.Errorf("merge: %q for %q is not one of text, binary", v, g))
+		}
 	}
 	if c.Git && (c.Layout != LayoutTree || (err == nil && r.Truncating())) {
 		errs = append(errs, errors.New("git = true requires layout = tree and retention = all (D12)"))

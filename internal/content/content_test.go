@@ -459,3 +459,15 @@ func BenchmarkIngest(b *testing.B) {
 		i++
 	}
 }
+
+// FileHash computes the same File hash as Ingest.
+func TestFileHash(t *testing.T) {
+	for _, size := range []int{0, 1, chunk.MinSize, chunk.MaxSize + 1, 3<<20 + 17} {
+		data := testutil.Bytes(fmt.Sprint("hash ", size), size)
+		res := ingest(t, newMemStore(t), data, int64(size))
+		h, n, err := FileHash(bytes.NewReader(data))
+		if err != nil || h != res.File || n != uint64(size) {
+			t.Fatalf("size %d: FileHash = %s, %d, %v; Ingest = %s", size, h.Short(), n, err, res.File.Short())
+		}
+	}
+}
