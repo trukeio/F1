@@ -262,6 +262,10 @@ func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, opts UpdateO
 	if len(updates) == 0 {
 		return nil
 	}
+	// The objects the refs will point to are checked and the refs written
+	// on the same side of a GC's epoch start and condemn step.
+	release := r.store.Guard()
+	defer release()
 	mode, _ := policy.ParseLocks(r.meta.Locks)
 	checkLocks := mode.Mode != "off" && !opts.skipLocks
 	seen := map[string]bool{}
@@ -279,7 +283,7 @@ func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, opts UpdateO
 		if u.New.IsZero() {
 			continue
 		}
-		ok, err := r.store.Has(ctx, u.New)
+		ok, err := r.store.HasGuarded(ctx, u.New)
 		if err != nil {
 			return err
 		}

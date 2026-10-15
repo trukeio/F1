@@ -251,3 +251,24 @@ func (c *DB) DeleteUpload(ctx context.Context, id string) error {
 		return nil
 	})
 }
+
+// PartFiles returns the Files of every part of every open upload (GC
+// roots).
+func (c *DB) PartFiles(ctx context.Context) ([]hash.Hash, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT file FROM upload_parts`)
+	if err != nil {
+		return nil, fmt.Errorf("cache: %w", err)
+	}
+	defer rows.Close()
+	var out []hash.Hash
+	for rows.Next() {
+		var b []byte
+		if err := rows.Scan(&b); err != nil {
+			return nil, fmt.Errorf("cache: %w", err)
+		}
+		var h hash.Hash
+		copy(h[:], b)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}

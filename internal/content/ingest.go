@@ -71,6 +71,9 @@ type Options struct {
 // digests run concurrently. Memory use is bounded by a fixed number of
 // in-flight chunks, independent of file size (D19).
 func Ingest(ctx context.Context, store Store, r io.Reader, sizeHint int64, opts Options) (Result, error) {
+	if sizeHint >= 0 && sizeHint <= smallFile {
+		return ingestSmall(ctx, store, r, sizeHint)
+	}
 	workers := opts.Workers
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
@@ -149,6 +152,79 @@ func Ingest(ctx context.Context, store Store, r io.Reader, sizeHint int64, opts 
 		res.Digests.SHA1Git = sum
 	}
 
+	dr := &object.DigestRecord{File: res.File, SHA1Git: res.Digests.SHA1Git, SHA256: res.Digests.SHA256, MD5: res.Digests.MD5}
+	if _, err := putObject(ctx, store, dr); err != nil {
+		return Result{}, err
+	}
+	return res, nil
+}
+
+// smallFile is the largest declared size ingested without the concurrent
+// pipeline, whose buffers cost more than the file itself.
+const smallFile = 1 << 20
+
+// ingestSmall is Ingest for a small file of known size: it reads the file
+// into memory and stores the same objects in one goroutine.
+func ingestSmall(ctx context.Context, store Store, r io.Reader, size int64) (Result, error) {
+	buf := make([]byte, size)
+	n, err := io.ReadFull(r, buf)
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return Result{}, fmt.Errorf("%w: got %d bytes, declared %d", ErrSizeMismatch, n, size)
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("content: read: %w", err)
+	}
+	var extra [1]byte
+	if n, err := io.ReadFull(r, extra[:]); n > 0 {
+		return Result{}, fmt.Errorf("%w: got more than the declared %d bytes", ErrSizeMismatch, size)
+	} else if err != nil && !errors.Is(err, io.EOF) {
+		return Result{}, fmt.Errorf("content: read: %w", err)
+	}
+	res := Result{Size: uint64(size)}
+	gitSHA1 := sha1.New()
+	gitSHA1.Write(blobHeader(uint64(size)))
+	gitSHA1.Write(buf)
+	copy(res.Digests.SHA1Git[:], gitSHA1.Sum(nil))
+	res.Digests.SHA256 = sha256.Sum256(buf)
+	res.Digests.MD5 = md5.Sum(buf)
+
+	builder := object.NewFileBuilder(func(x *object.FileIndex) (f1hash.Hash, error) {
+		return putObject(ctx, store, x)
+	})
+	stored := map[f1hash.Hash]bool{}
+	for data := buf; len(data) > 0; {
+		c := data[:chunk.Cut(data)]
+		data = data[len(c):]
+		h := object.ChunkHash(c)
+		if !stored[h] {
+			ok, err := store.Has(ctx, h)
+			if err != nil {
+				return Result{}, err
+			}
+			if !ok {
+				rec, err := pack.NewRecord(object.TypeChunk, h, c, nil)
+				if err != nil {
+					return Result{}, err
+				}
+				if err := store.Put(ctx, rec); err != nil {
+					return Result{}, err
+				}
+				res.NewChunks++
+			}
+			stored[h] = true
+		}
+		res.Chunks++
+		if err := builder.Add(object.Ref{Hash: h, Size: uint64(len(c))}); err != nil {
+			return Result{}, err
+		}
+	}
+	f, err := builder.Finish()
+	if err != nil {
+		return Result{}, err
+	}
+	if res.File, err = putObject(ctx, store, f); err != nil {
+		return Result{}, err
+	}
 	dr := &object.DigestRecord{File: res.File, SHA1Git: res.Digests.SHA1Git, SHA256: res.Digests.SHA256, MD5: res.Digests.MD5}
 	if _, err := putObject(ctx, store, dr); err != nil {
 		return Result{}, err

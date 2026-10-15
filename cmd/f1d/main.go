@@ -11,10 +11,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/trukeio/f1/internal/config"
 	"github.com/trukeio/f1/internal/gc"
 	"github.com/trukeio/f1/internal/logging"
+	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/server"
 )
 
@@ -26,6 +28,7 @@ const usage = `Usage: f1d <command> [flags]
 Commands:
   serve     run the server
   fsck      check a repository (offline; refuses while a server has it open)
+  gc        collect garbage in a repository (through a running server, or offline)
   repo      manage repositories: list, freeze, archive, import, attach, ...
   ns        create namespaces
   user      manage local users
@@ -54,6 +57,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return serve(ctx, args[1:], stderr)
 	case "fsck":
 		return fsck(ctx, args[1:], stdout, stderr)
+	case "gc":
+		return gcCmd(ctx, args[1:], stdout, stderr)
 	case "repo":
 		return repoCmd(ctx, args[1:], stdout, stderr)
 	case "ns", "user", "token", "s3key", "acl":
@@ -150,5 +155,93 @@ func fsck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, "fsck: ok (warnings are repaired when the repository is opened)")
 	}
+	return 0
+}
+
+func gcCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprint(stderr, "Usage: f1d gc [--config f1d.toml] [--dry-run] [--grace 24h] [--list] <namespace>\n"+
+			"       f1d gc [--dry-run] [--grace 24h] [--list] --dir <repository directory>\n")
+		fs.PrintDefaults()
+	}
+	configPath := fs.String("config", "f1d.toml", "path to the configuration file")
+	dir := fs.String("dir", "", "collect in this repository directory (offline) instead of a namespace")
+	dryRun := fs.Bool("dry-run", false, "report what would be deleted without deleting it")
+	grace := fs.String("grace", "", "keep unreachable objects written this recently (default: server.gc.grace)")
+	list := fs.Bool("list", false, "list the hashes of the deleted objects")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if (*dir == "") == (fs.NArg() != 1) || fs.NArg() > 1 {
+		fs.Usage()
+		return 2
+	}
+	fail := func(err error) int {
+		fmt.Fprintf(stderr, "f1d gc: %v\n", err)
+		return 1
+	}
+	var res *gc.Result
+	if *dir == "" {
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return fail(err)
+		}
+		if *grace == "" {
+			*grace = cfg.Server.GC.Grace
+		}
+		if c, ok := server.DialAdmin(cfg.Server.DataDir); ok {
+			if res, err = c.GC(ctx, fs.Arg(0), server.GCRequest{DryRun: *dryRun, Grace: *grace, List: *list}); err != nil {
+				return fail(err)
+			}
+		} else {
+			*dir = filepath.Join(cfg.Server.DataDir, server.ReposDir, fs.Arg(0))
+		}
+	}
+	if res == nil {
+		// Offline: open the repository directly (refused while a server
+		// has it open).
+		if *grace == "" {
+			*grace = gc.DefaultGrace.String()
+		}
+		d, err := time.ParseDuration(*grace)
+		if err != nil {
+			return fail(fmt.Errorf("--grace: %w", err))
+		}
+		if d == 0 {
+			d = -1
+		}
+		r, _, err := repo.Open(ctx, *dir, repo.Options{})
+		if err != nil {
+			return fail(err)
+		}
+		res, err = gc.Run(ctx, r, gc.Options{Grace: d, DryRun: *dryRun})
+		if cerr := r.Close(ctx); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return fail(err)
+		}
+		if *list {
+			res.List = res.Deleted
+		}
+	}
+	if res.Skipped != "" {
+		fmt.Fprintf(stdout, "skipped: %s\n", res.Skipped)
+		return 0
+	}
+	for _, h := range res.List {
+		fmt.Fprintln(stdout, h)
+	}
+	verb := "deleted"
+	if res.DryRun {
+		verb = "would delete"
+	}
+	fmt.Fprintf(stdout, "%s %d objects (%d bytes): %d packs deleted, %d rewritten; %d unreachable objects kept in mostly live packs; %d retained commits, %d live objects (%s)\n",
+		verb, res.DeletedObjects, res.DeletedBytes, len(res.PacksDeleted), len(res.PacksRewritten), res.Kept, res.Retained, res.Marked, res.Duration)
 	return 0
 }

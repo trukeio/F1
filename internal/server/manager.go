@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/trukeio/f1/internal/gc"
 	"github.com/trukeio/f1/internal/policy"
@@ -326,6 +327,50 @@ func ArchiveToFile(ctx context.Context, path string, archive func(io.Writer) (re
 		return repo.ArchiveInfo{}, err
 	}
 	return info, nil
+}
+
+// GC collects garbage in a repository (see gc.Run).
+func (m *Manager) GC(ctx context.Context, ns string, opts gc.Options) (*gc.Result, error) {
+	r, err := m.Get(ns)
+	if err != nil {
+		return nil, err
+	}
+	return gc.Run(ctx, r, opts)
+}
+
+// RunGC collects garbage in every repository every interval, one
+// repository at a time, until ctx is done.
+func (m *Manager) RunGC(ctx context.Context, interval, grace time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	if grace == 0 {
+		grace = -1 // an explicit zero grace period
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		for _, ns := range m.Names() {
+			if ctx.Err() != nil {
+				return
+			}
+			res, err := m.GC(ctx, ns, gc.Options{Grace: grace})
+			switch {
+			case err != nil:
+				m.log.Error("garbage collection failed", "namespace", ns, "err", err)
+			case res.Skipped != "":
+				m.log.Info("garbage collection skipped", "namespace", ns, "reason", res.Skipped)
+			default:
+				m.log.Info("garbage collection", "namespace", ns, "deleted_objects", res.DeletedObjects,
+					"deleted_bytes", res.DeletedBytes, "packs_deleted", len(res.PacksDeleted), "packs_rewritten", len(res.PacksRewritten), "duration", res.Duration)
+			}
+		}
+	}
 }
 
 // Close closes every open repository.

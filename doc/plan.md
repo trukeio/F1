@@ -580,6 +580,14 @@ Safety rules:
 - Old packs are deleted only after a second grace period (default 1 h), so in-flight reads complete.
 - A `gc --dry-run` mode reports what would be deleted.
 
+Implementation decisions are in ADR-0011. They cover:
+- the store as the single point of cooperation with writers, with checks and writes atomic with the epoch's steps;
+- pack age from the pack's ULID;
+- DigestRecords marked through their Files;
+- D9 kept for every stored object, so the references of garbage left in mostly live packs are rescued;
+- scheduling with `[server.gc]` and `f1d gc`.
+Client upload leases are not needed: the grace period, the touched set and the native client's push retry cover uploads.
+
 ## Identity and authorization
 
 ### Principals
@@ -635,7 +643,7 @@ Later: OIDC login in F1's own clients (authorization code with PKCE in a browser
 
 ## Operations
 
-- Single binary `f1d` with subcommands: `serve`, `gc`, `fsck`, `user`, `token`, `s3key`, `acl`, `ns`, `repo` (`archive`, `freeze`, `unfreeze`, `import`, `attach`, `detach`, `export-acl`, `import-acl`, `rebuild-cache`), `backup`.
+- Single binary `f1d` with subcommands: `serve`, `gc` (`--dry-run`, `--grace`, `--list`; through the admin socket, or offline with `--dir`), `fsck`, `user`, `token`, `s3key`, `acl`, `ns`, `repo` (`archive`, `freeze`, `unfreeze`, `import`, `attach`, `detach`, `export-acl`, `import-acl`, `rebuild-cache`), `backup`.
 - Admin commands that act on a running server talk to it over a Unix socket (`<data_dir>/admin.sock`, mode 0600; HTTP with JSON bodies, ADR-0004). The socket also prevents a second server on the same data directory. Commands that work offline (`fsck`, `rebuild-cache`, `archive` of a detached repository) open the directory directly and refuse if the server holds it.
 - `fsck <ns>`: verify pack checksums, that `cache.db` matches the packs, reachability from refs, and invariant D9. Works on a copied or extracted repository directory without a server (`f1d fsck --dir <path>`).
 - Metrics: Prometheus text format on `/metrics` (no client library dependency required; write the exposition format directly or use `prometheus/client_golang` if approved).

@@ -23,6 +23,14 @@ upload_expiry = "168h"
 # namespace = "design"
 # ref       = "heads/dev"
 
+[server.gc]
+# Garbage collection of every repository; "0" disables it (f1d gc still
+# runs one on demand).
+interval = "24h"
+# Unreachable objects written this recently are kept (uploads that are not
+# committed yet).
+grace = "24h"
+
 [log]
 level  = "info"   # debug | info | warn | error
 format = "text"   # text | json

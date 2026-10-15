@@ -105,7 +105,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(Ad
 	}
 	gitAPI := &git.Server{Repos: mgr, Auth: chain, ACL: acl, Log: log}
 	srv := newServer(newMux(nativeAPI.Handler(), gitAPI))
-	admin := newServer(adminHandler(mgr, log))
+	admin := newServer(adminHandler(mgr, cfg.Server.GC.GraceDuration(), log))
 	servers := []*http.Server{srv, admin}
 
 	errc := make(chan error, 3)
@@ -115,6 +115,13 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(Ad
 
 	bgCtx, stopBackground := context.WithCancel(ctx)
 	defer stopBackground()
+	gcDone := make(chan struct{})
+	go func() {
+		defer close(gcDone)
+		mgr.RunGC(bgCtx, cfg.Server.GC.IntervalDuration(), cfg.Server.GC.GraceDuration())
+	}()
+	// Repositories are closed after the collector stops.
+	defer func() { stopBackground(); <-gcDone }()
 	if s3ln != nil {
 		s3cfg := cfg.Server.S3
 		aliases := map[string]s3.Alias{}

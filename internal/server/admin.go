@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/trukeio/f1/internal/gc"
 	"github.com/trukeio/f1/internal/policy"
 	"github.com/trukeio/f1/internal/repo"
 )
@@ -54,7 +55,7 @@ func listenAdmin(path string) (net.Listener, error) {
 // adminHandler serves the admin API used by "f1d repo ..." on a running
 // server. Every request is local and authenticated by the socket's file
 // permissions.
-func adminHandler(m *Manager, log *slog.Logger) http.Handler {
+func adminHandler(m *Manager, gcGrace time.Duration, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	reply := func(w http.ResponseWriter, v any, err error) {
 		w.Header().Set("Content-Type", "application/json")
@@ -106,6 +107,33 @@ func adminHandler(m *Manager, log *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /repos/{ns}/detach", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, m.Detach(r.Context(), r.PathValue("ns")))
 	})
+	mux.HandleFunc("POST /repos/{ns}/gc", func(w http.ResponseWriter, r *http.Request) {
+		var req GCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			reply(w, nil, fmt.Errorf("server: gc: %w", err))
+			return
+		}
+		grace, err := time.ParseDuration(req.Grace)
+		if req.Grace == "" {
+			grace, err = gcGrace, nil
+		}
+		if err != nil {
+			reply(w, nil, fmt.Errorf("server: gc: grace: %w", err))
+			return
+		}
+		if grace == 0 {
+			grace = -1
+		}
+		ns := r.PathValue("ns")
+		res, err := m.GC(r.Context(), ns, gc.Options{Grace: grace, DryRun: req.DryRun})
+		if err == nil && !req.DryRun && res.Skipped == "" {
+			log.Info("garbage collection", "namespace", ns, "deleted_objects", res.DeletedObjects, "deleted_bytes", res.DeletedBytes)
+		}
+		if err == nil && req.List {
+			res.List = res.Deleted
+		}
+		reply(w, res, err)
+	})
 	mux.HandleFunc("POST /repos/{ns}/archive", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Path string `json:"path"`
@@ -124,6 +152,13 @@ func adminHandler(m *Manager, log *slog.Logger) http.Handler {
 		reply(w, info, err)
 	})
 	return mux
+}
+
+// GCRequest asks for a garbage collection over the admin socket.
+type GCRequest struct {
+	DryRun bool   `json:"dry_run"`
+	Grace  string `json:"grace,omitempty"` // default: the server's
+	List   bool   `json:"list,omitempty"`  // include the deleted object hashes
 }
 
 // AdminClient talks to a running server over its admin socket.
@@ -194,6 +229,12 @@ func (c *AdminClient) Do(ctx context.Context, action, ns string) error {
 // defaults).
 func (c *AdminClient) Create(ctx context.Context, ns, preset string) error {
 	return c.call(ctx, http.MethodPost, "/repos/"+ns+"/create", map[string]string{"preset": preset}, nil)
+}
+
+// GC asks the server to collect garbage in ns.
+func (c *AdminClient) GC(ctx context.Context, ns string, req GCRequest) (*gc.Result, error) {
+	var res gc.Result
+	return &res, c.call(ctx, http.MethodPost, "/repos/"+ns+"/gc", req, &res)
 }
 
 // Archive asks the server to write an archive of ns to path (absolute,

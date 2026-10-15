@@ -50,7 +50,8 @@ format = "json"
 	}
 	want := Config{
 		Server: Server{DataDir: "/var/lib/f1", Listen: ":9999",
-			S3: S3{Listen: "127.0.0.1:9000", Region: "us-east-1", CreateBucket: true, UploadExpiry: "168h"}},
+			S3: S3{Listen: "127.0.0.1:9000", Region: "us-east-1", CreateBucket: true, UploadExpiry: "168h"},
+			GC: GC{Interval: "24h", Grace: "24h"}},
 		Log:  Log{Level: "debug", Format: "json"},
 		Auth: Auth{S3GroupTTL: "24h"},
 	}

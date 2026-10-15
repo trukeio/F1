@@ -226,21 +226,38 @@ type NewPack struct {
 // indexed in another pack keeps its existing location.
 func (c *DB) AddPacks(ctx context.Context, packs ...NewPack) error {
 	return c.tx(ctx, func(tx *sql.Tx) error {
-		return addPacks(ctx, tx, packs, false)
+		return addPacks(ctx, tx, packs, func(hash.Hash) bool { return false })
 	})
 }
 
 // ReplacePacks indexes new packs and removes old ones in one transaction.
-// Objects of the new packs take over their index rows (a consolidation or
-// GC rewrite copied them); every object of the old packs must be in the new
-// ones. The old pack files are scheduled for deletion after grace.
+// Objects of the new packs take over their index rows (a consolidation
+// copied them); every object of the old packs must be in the new ones. The
+// old pack files are scheduled for deletion after grace.
 func (c *DB) ReplacePacks(ctx context.Context, old []string, packs []NewPack, grace time.Duration) error {
+	return c.replacePacks(ctx, old, packs, grace, false)
+}
+
+// SweepPacks is ReplacePacks for a GC sweep: the new packs hold the live
+// objects of the old ones, and the index rows still pointing at the old
+// packs (their condemned objects) are removed. A fresh copy written during
+// the GC has moved its row to its own pack and keeps it.
+func (c *DB) SweepPacks(ctx context.Context, old []string, packs []NewPack, grace time.Duration) error {
+	return c.replacePacks(ctx, old, packs, grace, true)
+}
+
+func (c *DB) replacePacks(ctx context.Context, old []string, packs []NewPack, grace time.Duration, drop bool) error {
 	after := time.Now().Add(grace).UnixNano()
 	return c.tx(ctx, func(tx *sql.Tx) error {
-		if err := addPacks(ctx, tx, packs, true); err != nil {
+		if err := addPacks(ctx, tx, packs, func(hash.Hash) bool { return true }); err != nil {
 			return err
 		}
 		for _, name := range old {
+			if drop {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM objects WHERE pack_id = (SELECT id FROM packs WHERE name = ?)`, name); err != nil {
+					return fmt.Errorf("cache: %w", err)
+				}
+			}
 			var left int
 			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM objects o JOIN packs p ON p.id = o.pack_id WHERE p.name = ?`, name).Scan(&left); err != nil {
 				return fmt.Errorf("cache: %w", err)
@@ -259,16 +276,28 @@ func (c *DB) ReplacePacks(ctx context.Context, old []string, packs []NewPack, gr
 	})
 }
 
-func addPacks(ctx context.Context, tx *sql.Tx, packs []NewPack, replace bool) error {
-	verb := "INSERT OR IGNORE"
-	if replace {
-		verb = "INSERT OR REPLACE"
-	}
-	insObj, err := tx.PrepareContext(ctx, verb+` INTO objects(hash, pack_id, offset, stored, size, type, flags) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+// AddPacksReplacing is AddPacks where the objects in replace take over
+// their index rows: fresh copies of objects that a GC condemned.
+func (c *DB) AddPacksReplacing(ctx context.Context, replace map[hash.Hash]bool, packs ...NewPack) error {
+	return c.tx(ctx, func(tx *sql.Tx) error {
+		return addPacks(ctx, tx, packs, func(h hash.Hash) bool { return replace[h] })
+	})
+}
+
+// addPacks indexes packs. An object already indexed keeps its row unless
+// replace reports true for it.
+func addPacks(ctx context.Context, tx *sql.Tx, packs []NewPack, replace func(hash.Hash) bool) error {
+	const cols = ` INTO objects(hash, pack_id, offset, stored, size, type, flags) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	insObj, err := tx.PrepareContext(ctx, "INSERT OR IGNORE"+cols)
 	if err != nil {
 		return fmt.Errorf("cache: %w", err)
 	}
 	defer insObj.Close()
+	replObj, err := tx.PrepareContext(ctx, "INSERT OR REPLACE"+cols)
+	if err != nil {
+		return fmt.Errorf("cache: %w", err)
+	}
+	defer replObj.Close()
 	insDigest, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO digests(file, sha1git, sha256, md5) VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("cache: %w", err)
@@ -284,7 +313,11 @@ func addPacks(ctx context.Context, tx *sql.Tx, packs []NewPack, replace bool) er
 			return fmt.Errorf("cache: %w", err)
 		}
 		for _, e := range p.Entries {
-			if _, err := insObj.ExecContext(ctx, e.Hash[:], id, int64(e.Offset), e.Stored, e.Size, int(e.Type), int(e.Flags)); err != nil {
+			st := insObj
+			if replace(e.Hash) {
+				st = replObj
+			}
+			if _, err := st.ExecContext(ctx, e.Hash[:], id, int64(e.Offset), e.Stored, e.Size, int(e.Type), int(e.Flags)); err != nil {
 				return fmt.Errorf("cache: %w", err)
 			}
 		}
@@ -452,6 +485,27 @@ func (c *DB) PendingDeletes(ctx context.Context) (map[string]bool, error) {
 		m[n] = true
 	}
 	return m, nil
+}
+
+// DeleteOrphans removes digests and git_map rows of objects that are no
+// longer stored (after a GC sweep). It returns the number of rows removed.
+func (c *DB) DeleteOrphans(ctx context.Context) (int64, error) {
+	var n int64
+	err := c.tx(ctx, func(tx *sql.Tx) error {
+		for _, q := range []string{
+			`DELETE FROM digests WHERE file NOT IN (SELECT hash FROM objects)`,
+			`DELETE FROM git_map WHERE f1 NOT IN (SELECT hash FROM objects)`,
+		} {
+			res, err := tx.ExecContext(ctx, q)
+			if err != nil {
+				return fmt.Errorf("cache: %w", err)
+			}
+			k, _ := res.RowsAffected()
+			n += k
+		}
+		return nil
+	})
+	return n, err
 }
 
 // DonePendingDelete removes a pack file from the pending deletes.

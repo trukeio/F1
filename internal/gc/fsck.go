@@ -1,5 +1,5 @@
-// Package gc holds repository maintenance: fsck now, garbage collection in
-// phase 8.
+// Package gc holds repository maintenance: garbage collection with
+// retention (gc.go) and fsck.
 package gc
 
 import (
@@ -15,6 +15,7 @@ import (
 	"github.com/trukeio/f1/internal/hash"
 	"github.com/trukeio/f1/internal/object"
 	"github.com/trukeio/f1/internal/pack"
+	"github.com/trukeio/f1/internal/policy"
 	"github.com/trukeio/f1/internal/repodir"
 )
 
@@ -148,7 +149,33 @@ func check(ctx context.Context, dir *repodir.Dir) (*Report, error) {
 	readObjects(dir, footers, pending, func(h hash.Hash, o object.Object) { objs[h] = o }, rep)
 	checkD9(objs, stored, truncating, rep)
 	checkReachable(objs, refs, stored, truncating, rep)
+	checkRetention(objs, refs, meta.RetentionPolicy(), rep)
 	return rep, nil
+}
+
+// checkRetention warns when a ref's first-parent history is shorter than
+// a last:N policy keeps: GC under a stricter earlier policy explains it,
+// otherwise history was lost. (In other namespaces a missing parent is an
+// error of checkD9; days:N cannot be checked without the GC's clock.)
+func checkRetention(objs map[hash.Hash]object.Object, refs map[string]hash.Hash, pol policy.Retention, rep *Report) {
+	if pol.Kind != "last" {
+		return
+	}
+	for _, name := range sortedKeys(refs) {
+		h := refs[name]
+		for n := 1; n < pol.N; n++ {
+			c, ok := objs[h].(*object.Commit)
+			if !ok || len(c.Parents) == 0 {
+				break
+			}
+			if _, ok := objs[c.Parents[0]]; !ok {
+				rep.add(Warning, "ref %s: history ends after %d commits at %s, retention last:%d keeps %d (expected after a stricter earlier retention policy)",
+					name, n, h.Short(), pol.N, pol.N)
+				break
+			}
+			h = c.Parents[0]
+		}
+	}
 }
 
 func packFiles(dir *repodir.Dir) ([]string, error) {

@@ -213,9 +213,11 @@ func TestIngestEdit(t *testing.T) {
 }
 
 func TestIngestSizeMismatch(t *testing.T) {
-	_, err := Ingest(context.Background(), newMemStore(t), bytes.NewReader([]byte("abc")), 4, Options{})
-	if !errors.Is(err, ErrSizeMismatch) {
-		t.Fatalf("err = %v", err)
+	for _, size := range []int64{2, 4} { // more and fewer bytes than declared
+		_, err := Ingest(context.Background(), newMemStore(t), bytes.NewReader([]byte("abc")), size, Options{})
+		if !errors.Is(err, ErrSizeMismatch) {
+			t.Fatalf("size %d: err = %v", size, err)
+		}
 	}
 }
 
@@ -462,7 +464,7 @@ func BenchmarkIngest(b *testing.B) {
 
 // FileHash computes the same File hash as Ingest.
 func TestFileHash(t *testing.T) {
-	for _, size := range []int{0, 1, chunk.MinSize, chunk.MaxSize + 1, 3<<20 + 17} {
+	for _, size := range []int{0, 1, chunk.MinSize, chunk.MaxSize + 1, smallFile, smallFile + 1, 3<<20 + 17} {
 		data := testutil.Bytes(fmt.Sprint("hash ", size), size)
 		res := ingest(t, newMemStore(t), data, int64(size))
 		h, n, err := FileHash(bytes.NewReader(data))

@@ -47,6 +47,11 @@ type Consolidation struct {
 func (s *Store) Consolidate(ctx context.Context, force bool) (Consolidation, error) {
 	s.maint.Lock()
 	defer s.maint.Unlock()
+	return s.consolidate(ctx, force)
+}
+
+// consolidate is Consolidate with s.maint held.
+func (s *Store) consolidate(ctx context.Context, force bool) (Consolidation, error) {
 	var res Consolidation
 	s.mu.Lock()
 	closed := s.closed

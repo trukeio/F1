@@ -78,9 +78,14 @@ type Store struct {
 	idle   *time.Timer
 	closed bool
 
-	maint         sync.Mutex  // serializes consolidation
+	maint         sync.Mutex  // serializes consolidation and GC sweeps
 	consolidating atomic.Bool // a background consolidation is running
 	holds         int         // active holds; guarded by maint
+
+	gcMu    sync.RWMutex // GC epoch; Has holds it shared, Condemn exclusively (gc.go)
+	touchMu sync.Mutex   // the touched set's map
+	condMu  sync.Mutex   // the published condemned set
+	gc      gcState
 }
 
 type openPack struct {
@@ -268,16 +273,52 @@ func (s *Store) Cache() *cache.DB { return s.cache }
 
 // Has reports whether an object is stored, in a sealed pack or in the open
 // pack. It is the single existence check for writers.
+//
+// During a GC epoch, objects found are recorded as touched, and condemned
+// objects are reported as not stored unless the open pack holds a fresh
+// copy (gc.go).
 func (s *Store) Has(ctx context.Context, h hash.Hash) (bool, error) {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+	return s.hasLocked(ctx, h)
+}
+
+// Guard holds off the start of a GC epoch and its condemn step until
+// release: a writer that checks references with HasGuarded and then
+// publishes something that depends on them (a ref update) does both on the
+// same side of those steps.
+func (s *Store) Guard() (release func()) {
+	s.gcMu.RLock()
+	return s.gcMu.RUnlock
+}
+
+// HasGuarded is Has for a caller that holds Guard.
+func (s *Store) HasGuarded(ctx context.Context, h hash.Hash) (bool, error) {
+	return s.hasLocked(ctx, h)
+}
+
+func (s *Store) hasLocked(ctx context.Context, h hash.Hash) (bool, error) {
 	s.mu.Lock()
+	inOpen := false
 	if s.open != nil {
-		if _, ok := s.open.index[h]; ok {
-			s.mu.Unlock()
-			return true, nil
-		}
+		_, inOpen = s.open.index[h]
 	}
 	s.mu.Unlock()
-	return s.cache.Has(ctx, h)
+	if !inOpen {
+		ok, err := s.cache.Has(ctx, h)
+		if err != nil || !ok {
+			return false, err
+		}
+		if s.condemnedNow(h) {
+			return false, nil
+		}
+	}
+	if s.gc.touched != nil {
+		s.touchMu.Lock()
+		s.gc.touched[h] = struct{}{}
+		s.touchMu.Unlock()
+	}
+	return true, nil
 }
 
 // ErrMissingReference is returned by Put when an object references an
@@ -287,7 +328,18 @@ var ErrMissingReference = errors.New("store: referenced object is not stored")
 // Put stores a record in the open pack. CBOR objects are decoded and every
 // object they reference must already be stored (D9). Put does not retain
 // rec.Data. The object becomes durable at the next Flush.
+//
+// The reference checks and the write happen under Guard, and an object
+// written during a GC epoch counts as touched (it is new, whatever its
+// pack's age).
 func (s *Store) Put(ctx context.Context, rec pack.Record) error {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+	if s.gc.touched != nil {
+		s.touchMu.Lock()
+		s.gc.touched[rec.Hash] = struct{}{}
+		s.touchMu.Unlock()
+	}
 	var digest *object.DigestRecord
 	if rec.Type != object.TypeChunk {
 		payload, err := rec.Payload(nil)
@@ -299,7 +351,7 @@ func (s *Store) Put(ctx context.Context, rec pack.Record) error {
 			return err
 		}
 		for _, ref := range object.References(o) {
-			ok, err := s.Has(ctx, ref)
+			ok, err := s.hasLocked(ctx, ref)
 			if err != nil {
 				return err
 			}
@@ -399,7 +451,8 @@ func (s *Store) sealLocked(ctx context.Context) error {
 	if err := s.publish(ctx, op.path, op.name); err != nil {
 		return err
 	}
-	if err := s.cache.AddPacks(ctx, cache.NewPack{Name: op.name, Size: size, Entries: entries, Digests: op.digests}); err != nil {
+	np := cache.NewPack{Name: op.name, Size: size, Entries: entries, Digests: op.digests}
+	if err := s.cache.AddPacksReplacing(ctx, s.freshCopies(entries), np); err != nil {
 		return err
 	}
 	s.maybeConsolidate()

@@ -49,6 +49,31 @@ type Server struct {
 	Listen string `toml:"listen"`
 	// S3 configures the S3 API listener.
 	S3 S3 `toml:"s3"`
+	// GC configures garbage collection.
+	GC GC `toml:"gc"`
+}
+
+// GC configures garbage collection (doc/plan.md, "Retention and garbage
+// collection").
+type GC struct {
+	// Interval between collections of every repository; "0" disables
+	// them (f1d gc still runs one). Default "24h".
+	Interval string `toml:"interval"`
+	// Grace protects objects written this recently even if unreachable
+	// (uploads not yet committed). Default "24h".
+	Grace string `toml:"grace"`
+}
+
+// IntervalDuration returns the parsed Interval.
+func (g GC) IntervalDuration() time.Duration {
+	d, _ := time.ParseDuration(g.Interval)
+	return d
+}
+
+// GraceDuration returns the parsed Grace.
+func (g GC) GraceDuration() time.Duration {
+	d, _ := time.ParseDuration(g.Grace)
+	return d
 }
 
 // S3 configures the S3 compatibility API (doc/plan.md, "S3 compatibility
@@ -102,6 +127,7 @@ func Default() Config {
 				CreateBucket: true,
 				UploadExpiry: "168h",
 			},
+			GC: GC{Interval: "24h", Grace: "24h"},
 		},
 		Log: Log{
 			Level:  "info",
@@ -156,6 +182,12 @@ func (c Config) Validate() error {
 	}
 	if d, err := time.ParseDuration(c.Server.S3.UploadExpiry); err != nil || d <= 0 {
 		errs = append(errs, fmt.Errorf("server.s3.upload_expiry: %q is not a positive duration", c.Server.S3.UploadExpiry))
+	}
+	if d, err := time.ParseDuration(c.Server.GC.Interval); err != nil || d < 0 {
+		errs = append(errs, fmt.Errorf("server.gc.interval: %q is not a duration (0 disables)", c.Server.GC.Interval))
+	}
+	if d, err := time.ParseDuration(c.Server.GC.Grace); err != nil || d < 0 {
+		errs = append(errs, fmt.Errorf("server.gc.grace: %q is not a duration", c.Server.GC.Grace))
 	}
 	buckets := map[string]bool{}
 	for _, a := range c.Server.S3.Aliases {
