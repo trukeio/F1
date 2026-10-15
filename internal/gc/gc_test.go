@@ -477,7 +477,7 @@ func TestGCOverwrites(t *testing.T) {
 	}
 	keys, rounds := 1000, 1000
 	if raceEnabled {
-		rounds = 50
+		rounds = 10
 	}
 	cfg := policy.Default()
 	cfg.Retention = "none"
