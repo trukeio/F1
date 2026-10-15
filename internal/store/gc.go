@@ -3,15 +3,12 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/trukeio/f1/internal/backend"
 	"github.com/trukeio/f1/internal/cache"
 	"github.com/trukeio/f1/internal/hash"
 	"github.com/trukeio/f1/internal/object"
@@ -339,69 +336,40 @@ func (s *Store) Sweep(ctx context.Context, condemned map[hash.Hash]struct{}, dry
 		return res, nil
 	}
 
-	// Copy the live objects of rewritten packs into new packs.
-	var created []cache.NewPack
-	var cur *openPack
-	finish := func() error {
-		if cur == nil {
-			return nil
+	// Deleted packs, in batches of whole packs, then the rewritten packs:
+	// each new pack and the packs it replaces in one transaction.
+	var batch []string
+	rows := 0
+	for _, pl := range plans {
+		if pl.action != 1 {
+			continue
 		}
-		np, err := s.sealConsolidated(ctx, cur)
-		cur = nil
-		if err != nil {
-			return err
-		}
-		created = append(created, np)
-		return nil
-	}
-	defer func() {
-		if cur != nil {
-			cur.f.Close()
-			os.Remove(cur.path)
-		}
-	}()
-	for _, pl := range rewrite {
-		r := backend.NewReaderAt(ctx, s.be, packKey(pl.name))
-		for _, e := range pl.live {
-			rec, err := readRecord(r, e)
-			if err != nil {
-				return res, fmt.Errorf("store: gc rewrite %s: %w", pl.name, err)
-			}
-			if cur == nil {
-				if cur, err = newPackFile(s.dir); err != nil {
-					return res, err
-				}
-			}
-			if _, err := cur.w.Add(rec); err != nil {
+		batch = append(batch, pl.name)
+		if rows += len(pl.dead); rows >= repackRows {
+			if err := s.cache.SweepPacks(ctx, batch, nil, s.opts.DeleteGrace); err != nil {
 				return res, err
 			}
-			if rec.Type == object.TypeDigestRecord {
-				payload, err := rec.Payload(nil)
-				if err != nil {
-					return res, err
-				}
-				d, err := object.DecodeAs[*object.DigestRecord](payload)
-				if err != nil {
-					return res, err
-				}
-				cur.digests = append(cur.digests, *d)
-			}
-			if int64(cur.w.Len()) >= s.opts.PackTarget {
-				if err := finish(); err != nil {
-					return res, err
-				}
-			}
+			batch, rows = nil, 0
 		}
 	}
-	if err := finish(); err != nil {
-		return res, err
+	if len(batch) > 0 {
+		if err := s.cache.SweepPacks(ctx, batch, nil, s.opts.DeleteGrace); err != nil {
+			return res, err
+		}
 	}
-	old := append(slices.Clone(res.PacksDeleted), res.PacksRewritten...)
-	if err := s.cache.SweepPacks(ctx, old, created, s.opts.DeleteGrace); err != nil {
-		return res, err
+	var sources []repackSource
+	for _, pl := range rewrite {
+		sources = append(sources, repackSource{pl.name, pl.live})
 	}
-	for _, np := range created {
+	err = s.repack(ctx, sources, func(old []string, np cache.NewPack) error {
+		if err := s.cache.SweepPacks(ctx, old, []cache.NewPack{np}, s.opts.DeleteGrace); err != nil {
+			return err
+		}
 		res.PacksCreated = append(res.PacksCreated, np.Name)
+		return nil
+	})
+	if err != nil {
+		return res, err
 	}
 	if _, err := s.deleteDue(ctx); err != nil {
 		return res, err

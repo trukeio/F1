@@ -75,74 +75,26 @@ func (s *Store) consolidate(ctx context.Context, force bool) (Consolidation, err
 		return res, err
 	}
 
-	var created []cache.NewPack
-	var cur *openPack
-	finish := func() error {
-		if cur == nil {
-			return nil
-		}
-		np, err := s.sealConsolidated(ctx, cur)
-		cur = nil
-		if err != nil {
-			return err
-		}
-		created = append(created, np)
-		return nil
-	}
-	defer func() {
-		if cur != nil {
-			cur.f.Close()
-			os.Remove(cur.path)
-		}
-	}()
+	var sources []repackSource
 	for _, name := range small {
 		entries, err := s.cache.ObjectsInPack(ctx, name)
 		if err != nil {
 			return res, err
 		}
-		r := backend.NewReaderAt(ctx, s.be, packKey(name))
-		for _, e := range entries {
-			rec, err := readRecord(r, e)
-			if err != nil {
-				return res, fmt.Errorf("store: consolidate %s: %w", name, err)
-			}
-			if cur == nil {
-				if cur, err = newPackFile(s.dir); err != nil {
-					return res, err
-				}
-			}
-			if _, err := cur.w.Add(rec); err != nil {
-				return res, err
-			}
-			if rec.Type == object.TypeDigestRecord {
-				payload, err := rec.Payload(nil)
-				if err != nil {
-					return res, err
-				}
-				d, err := object.DecodeAs[*object.DigestRecord](payload)
-				if err != nil {
-					return res, err
-				}
-				cur.digests = append(cur.digests, *d)
-			}
-			if int64(cur.w.Len()) >= s.opts.PackTarget {
-				if err := finish(); err != nil {
-					return res, err
-				}
-			}
+		sources = append(sources, repackSource{name, entries})
+	}
+	err = s.repack(ctx, sources, func(old []string, np cache.NewPack) error {
+		if err := s.cache.ReplacePacks(ctx, old, []cache.NewPack{np}, s.opts.DeleteGrace); err != nil {
+			return err
 		}
-	}
-	if err := finish(); err != nil {
-		return res, err
-	}
-	if err := s.cache.ReplacePacks(ctx, small, created, s.opts.DeleteGrace); err != nil {
-		return res, err
-	}
-	res.Merged = small
-	for _, np := range created {
+		res.Merged = append(res.Merged, old...)
 		res.Created = append(res.Created, np.Name)
+		return nil
+	})
+	if err != nil {
+		return res, err
 	}
-	s.log.Info("consolidated packs", "repo", s.dir.Path(), "merged", len(small), "created", len(created))
+	s.log.Info("consolidated packs", "repo", s.dir.Path(), "merged", len(res.Merged), "created", len(res.Created))
 	res.Deleted, err = s.deleteDue(ctx)
 	return res, err
 }
@@ -224,4 +176,78 @@ func (s *Store) deleteDue(ctx context.Context) ([]string, error) {
 		}
 	}
 	return due, nil
+}
+
+// repackRows bounds the objects of one repacked pack, and so the index
+// rows one transaction moves: a long transaction would hold cache.db's
+// write lock past writers' busy timeout.
+const repackRows = 100000
+
+// repackSource is a pack and the entries of it to copy.
+type repackSource struct {
+	name    string
+	entries []pack.IndexEntry
+}
+
+// repack copies the entries of the sources into new packs. A new pack ends
+// after a whole source once it reaches PackTarget bytes or repackRows
+// objects; commit is then called with the sources it holds, so that each
+// transaction replaces whole packs and stays small.
+func (s *Store) repack(ctx context.Context, sources []repackSource, commit func(old []string, np cache.NewPack) error) error {
+	var cur *openPack
+	var curSources []string
+	defer func() {
+		if cur != nil {
+			cur.f.Close()
+			os.Remove(cur.path)
+		}
+	}()
+	finish := func() error {
+		if cur == nil {
+			return nil
+		}
+		np, err := s.sealConsolidated(ctx, cur)
+		cur = nil
+		if err != nil {
+			return err
+		}
+		old := curSources
+		curSources = nil
+		return commit(old, np)
+	}
+	for _, src := range sources {
+		r := backend.NewReaderAt(ctx, s.be, packKey(src.name))
+		for _, e := range src.entries {
+			rec, err := readRecord(r, e)
+			if err != nil {
+				return fmt.Errorf("store: repack %s: %w", src.name, err)
+			}
+			if cur == nil {
+				if cur, err = newPackFile(s.dir); err != nil {
+					return err
+				}
+			}
+			if _, err := cur.w.Add(rec); err != nil {
+				return err
+			}
+			if rec.Type == object.TypeDigestRecord {
+				payload, err := rec.Payload(nil)
+				if err != nil {
+					return err
+				}
+				d, err := object.DecodeAs[*object.DigestRecord](payload)
+				if err != nil {
+					return err
+				}
+				cur.digests = append(cur.digests, *d)
+			}
+		}
+		curSources = append(curSources, src.name)
+		if cur != nil && (int64(cur.w.Len()) >= s.opts.PackTarget || cur.w.Count() >= repackRows) {
+			if err := finish(); err != nil {
+				return err
+			}
+		}
+	}
+	return finish()
 }
