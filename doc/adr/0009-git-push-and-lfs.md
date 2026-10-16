@@ -16,9 +16,9 @@ Phase 6 serves Git push (receive-pack) and the Git LFS batch and locking APIs (d
    - It is spooled to the repository's `tmp/`, and its trailer checksum is verified.
    - It is indexed in one sequential pass.
    - Non-delta blobs stream straight into Ingest.
-   - Commits, trees and tags (at most 64 MiB each) are kept in memory for the import.
+   - Commits, trees and tags (at most 64 MiB each) are written to an object spool, a second file in `tmp/`, for the import. Memory holds only each object's type, offset and length: golang/go's 370,000 trees would otherwise take gigabytes. Pack entries are kept by value, and found by offset with a binary search.
    - Deltas (ofs-delta, and ref-delta including thin-pack bases from the repository) are applied afterwards. The delta result streams into Ingest as well, and bases are read with random access: from the spool for non-blobs, or through F1's ranged reads for blobs.
-   No object is ever loaded whole unless it is a commit, tree or tag, so memory stays bounded for blobs of any size (D19).
+   No object is ever loaded whole unless it is a commit, tree or tag being resolved or imported, so memory stays bounded for blobs of any size (D19), and grows with a push's object count by a few hundred bytes per object, not by its size. Pushing golang/go (68,110 commits, 684,820 objects) peaks at 699 MB of server memory, against 2.6 GB when commits and trees were kept in memory.
 2. **SHA-1 collision detection.** Every pushed object's id is computed with SHA-1DC (`github.com/pjbgf/sha1cd`), and a detected collision attack fails the push.
    - A Git object cannot carry the published SHAttered collision: its `blob <n>` header shifts the colliding blocks.
    - The test therefore checks the detector, which every object passes through, on the SHAttered blocks themselves (`testdata/shattered-1-prefix.bin`, rebuilt from the sha1cd test vectors).

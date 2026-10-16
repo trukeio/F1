@@ -2,13 +2,16 @@ package git
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -96,7 +99,11 @@ func deltaRepo(t *testing.T) string {
 
 func readAll(t *testing.T, pack []byte, sink *memSink) (int, error) {
 	t.Helper()
-	return readPack(context.Background(), bytes.NewReader(pack), t.TempDir(), sink)
+	spool, n, err := readPack(context.Background(), bytes.NewReader(pack), t.TempDir(), sink)
+	if err == nil {
+		spool.Close()
+	}
+	return n, err
 }
 
 // A full pack with ofs-deltas and a thin pack with ref-deltas against
@@ -190,6 +197,82 @@ func FuzzReadPack(f *testing.F) {
 		sum := sha1.Sum(data)
 		h := sum[:]
 		sink := &memSink{t: t, objects: map[SHA][]byte{}, types: map[SHA]Type{}}
-		readPack(context.Background(), bytes.NewReader(append(bytes.Clone(data), h...)), t.TempDir(), sink)
+		if spool, _, err := readPack(context.Background(), bytes.NewReader(append(bytes.Clone(data), h...)), t.TempDir(), sink); err == nil {
+			spool.Close()
+		}
 	})
+}
+
+// A pack of many commits and trees is held in the object spool, not in
+// memory: a push of a long history has hundreds of thousands of trees.
+func TestReadPackMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes an 80 MiB pack")
+	}
+	const n, size = 20000, 4096
+	var buf bytes.Buffer
+	buf.WriteString("PACK\x00\x00\x00\x02")
+	binary.Write(&buf, binary.BigEndian, uint32(n))
+	data := make([]byte, size)
+	for i := range n {
+		for j := range data {
+			data[j] = byte(i*31 + j*7 + j/3)
+		}
+		binary.BigEndian.PutUint32(data, uint32(i))
+		// Entry header: type tree, size in 4 + 7-bit groups.
+		c := byte(TypeTree)<<4 | byte(size&0x0f)
+		rest := size >> 4
+		for rest > 0 {
+			buf.WriteByte(c | 0x80)
+			c, rest = byte(rest&0x7f), rest>>7
+		}
+		buf.WriteByte(c)
+		zw := zlib.NewWriter(&buf)
+		zw.Write(data)
+		zw.Close()
+	}
+	sum := sha1.Sum(buf.Bytes())
+	buf.Write(sum[:])
+	pack := buf.Bytes()
+
+	sink := &nullSink{}
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	spool, got, err := readPack(context.Background(), bytes.NewReader(pack), t.TempDir(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spool.Close()
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(pack) // live in both measurements
+	if got != n || len(spool.index) != n || sink.objects != n {
+		t.Fatalf("%d entries, %d spooled, %d seen", got, len(spool.index), sink.objects)
+	}
+	t.Logf("heap grew by %.1f MiB for %d MiB of trees", float64(int64(after.HeapAlloc)-int64(before.HeapAlloc))/(1<<20), n*size>>20)
+	// The content is 80 MiB; what stays in memory is the index.
+	if grown := int64(after.HeapAlloc) - int64(before.HeapAlloc); grown > 16<<20 {
+		t.Fatalf("heap grew by %d MiB", grown>>20)
+	}
+	var any SHA
+	for s := range spool.index {
+		any = s
+		break
+	}
+	typ, back, err := spool.get(any)
+	if err != nil || typ != TypeTree || len(back) != size {
+		t.Fatalf("spooled object: %v, %d bytes, %v", typ, len(back), err)
+	}
+}
+
+// nullSink counts objects and keeps none.
+type nullSink struct{ objects int }
+
+func (s *nullSink) blob(_ context.Context, size int64, r io.Reader) (SHA, error) {
+	return SHA{}, errors.New("unexpected blob")
+}
+func (s *nullSink) object(Type, SHA, []byte) { s.objects++ }
+func (s *nullSink) base(context.Context, SHA) (Type, int64, io.ReaderAt, error) {
+	return 0, 0, nil, nil
 }

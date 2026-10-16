@@ -71,34 +71,23 @@ type command struct {
 	update   repo.RefUpdate
 }
 
-// pushSink stores the objects of a pushed pack: blobs through the
-// importer (streamed into Ingest), other objects kept for import in
-// dependency order.
+// pushSink stores the blobs of a pushed pack through the importer
+// (streamed into Ingest). Commits, trees and tags stay in the pack's
+// object spool until they are imported in dependency order.
 type pushSink struct {
-	im      *Importer
-	rp      *repo.Repo
-	objects map[SHA]pushedObject
-}
-
-type pushedObject struct {
-	t    Type
-	data []byte
+	im *Importer
+	rp *repo.Repo
 }
 
 func (ps *pushSink) blob(ctx context.Context, size int64, r io.Reader) (SHA, error) {
 	return ps.im.BlobStream(ctx, r, size)
 }
 
-func (ps *pushSink) object(t Type, s SHA, data []byte) {
-	ps.objects[s] = pushedObject{t, data}
-}
+func (ps *pushSink) object(Type, SHA, []byte) {}
 
 // base returns a delta base that is not a resolved non-blob of the pack:
 // a blob of this push, or an object of the repository (thin packs).
 func (ps *pushSink) base(ctx context.Context, s SHA) (Type, int64, io.ReaderAt, error) {
-	if o, ok := ps.objects[s]; ok {
-		return o.t, int64(len(o.data)), bytesReaderAt(o.data), nil
-	}
 	imp, ok, err := ps.im.Known(ctx, s)
 	if err != nil || !ok {
 		return 0, 0, nil, err
@@ -224,11 +213,13 @@ func (s *Server) importPack(ctx context.Context, body io.Reader, rp *repo.Repo, 
 		return nil
 	}
 	im := NewImporter(rp)
-	sink := &pushSink{im: im, rp: rp, objects: map[SHA]pushedObject{}}
-	if _, err := readPack(ctx, body, filepath.Join(rp.Path(), repodir.TmpDir), sink); err != nil {
+	sink := &pushSink{im: im, rp: rp}
+	spool, _, err := readPack(ctx, body, filepath.Join(rp.Path(), repodir.TmpDir), sink)
+	if err != nil {
 		return err
 	}
-	if err := importObjects(ctx, im, sink.objects); err != nil {
+	defer spool.Close()
+	if err := importObjects(ctx, im, spool); err != nil {
 		return err
 	}
 	for _, c := range cmds {
@@ -254,23 +245,25 @@ func (s *Server) importPack(ctx context.Context, body io.Reader, rp *repo.Repo, 
 
 // importObjects imports the non-blob objects of a push in dependency
 // order: trees after their subtrees, commits after their trees and
-// parents, tags after their targets. Iterative: histories are deep.
-func importObjects(ctx context.Context, im *Importer, objs map[SHA]pushedObject) error {
+// parents, tags after their targets. Iterative: histories are deep. The
+// objects are read from the spool when they are needed.
+func importObjects(ctx context.Context, im *Importer, spool *objectSpool) error {
+	objs := spool.index
 	shas := make([]SHA, 0, len(objs))
 	for sha := range objs {
 		shas = append(shas, sha)
 	}
 	sort.Slice(shas, func(i, j int) bool { return bytes.Compare(shas[i][:], shas[j][:]) < 0 })
-	deps := func(sha SHA, o pushedObject) ([]SHA, error) {
+	deps := func(sha SHA, t Type, data []byte) ([]SHA, error) {
 		var out []SHA
 		add := func(d SHA) {
 			if _, ok := objs[d]; ok {
 				out = append(out, d)
 			}
 		}
-		switch o.t {
+		switch t {
 		case TypeTree:
-			entries, err := ParseTree(o.data)
+			entries, err := ParseTree(data)
 			if err != nil {
 				return nil, err
 			}
@@ -280,7 +273,7 @@ func importObjects(ctx context.Context, im *Importer, objs map[SHA]pushedObject)
 				}
 			}
 		case TypeCommit:
-			pc, err := ParseCommit(o.data)
+			pc, err := ParseCommit(data)
 			if err != nil {
 				return nil, fmt.Errorf("commit %s: %w", sha, err)
 			}
@@ -289,7 +282,7 @@ func importObjects(ctx context.Context, im *Importer, objs map[SHA]pushedObject)
 				add(p)
 			}
 		case TypeTag:
-			pt, err := ParseTag(o.data)
+			pt, err := ParseTag(data)
 			if err != nil {
 				return nil, fmt.Errorf("tag %s: %w", sha, err)
 			}
@@ -297,7 +290,13 @@ func importObjects(ctx context.Context, im *Importer, objs map[SHA]pushedObject)
 		}
 		return out, nil
 	}
-	done := map[SHA]bool{}
+	// Depth-first, parents first. An object is expanded (state 1) when its
+	// dependencies are pushed, and imported (state 2) when it comes back to
+	// the top. Expanded objects are exactly those on the current path, so a
+	// dependency in state 1 is a cycle. An object may be pushed more than
+	// once (shared subtrees, a parent listed twice); later copies are
+	// skipped.
+	state := map[SHA]uint8{}
 	for _, root := range shas {
 		stack := []SHA{root}
 		for len(stack) > 0 {
@@ -305,40 +304,46 @@ func importObjects(ctx context.Context, im *Importer, objs map[SHA]pushedObject)
 				return err
 			}
 			top := stack[len(stack)-1]
-			if done[top] {
+			if state[top] == 2 {
 				stack = stack[:len(stack)-1]
 				continue
 			}
-			o := objs[top]
-			ds, err := deps(top, o)
+			t, data, err := spool.get(top)
 			if err != nil {
 				return err
 			}
-			pending := false
-			for _, d := range ds {
-				if !done[d] {
-					stack = append(stack, d)
-					pending = true
+			if state[top] == 0 {
+				state[top] = 1
+				ds, err := deps(top, t, data)
+				if err != nil {
+					return err
+				}
+				pending := false
+				for _, d := range ds {
+					switch state[d] {
+					case 0:
+						stack = append(stack, d)
+						pending = true
+					case 1:
+						return errors.New("object graph has a cycle")
+					}
+				}
+				if pending {
+					continue
 				}
 			}
-			if pending {
-				if len(stack) > len(objs)+1 {
-					return errors.New("object graph has a cycle")
-				}
-				continue
-			}
-			switch o.t {
+			switch t {
 			case TypeTree:
-				err = im.Tree(ctx, top, o.data)
+				err = im.Tree(ctx, top, data)
 			case TypeCommit:
-				err = im.Commit(ctx, top, o.data)
+				err = im.Commit(ctx, top, data)
 			case TypeTag:
-				err = im.Tag(ctx, top, o.data)
+				err = im.Tag(ctx, top, data)
 			}
 			if err != nil {
 				return err
 			}
-			done[top] = true
+			state[top] = 2
 			stack = stack[:len(stack)-1]
 		}
 	}

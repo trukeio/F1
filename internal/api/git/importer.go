@@ -19,9 +19,19 @@ import (
 // are kept (GitRaw for trees, git_raw_hint for commits and tags), so Git
 // ids never change.
 type Importer struct {
-	rp   *repo.Repo
-	x    *Exporter
-	objs map[SHA]Imported
+	rp *repo.Repo
+	x  *Exporter
+	// The objects converted or looked up so far: a push of a long history
+	// has hundreds of thousands, so an entry is only a type and a hash, and
+	// the rare extras are kept apart.
+	objs     map[SHA]importedRef
+	raws     map[SHA]hash.Hash // trees with a GitRaw
+	pointers map[SHA][]byte    // LFS pointer blobs
+}
+
+type importedRef struct {
+	f1  hash.Hash
+	typ uint8
 }
 
 // Imported is a Git object converted to F1.
@@ -34,20 +44,37 @@ type Imported struct {
 
 // NewImporter returns an importer into rp.
 func NewImporter(rp *repo.Repo) *Importer {
-	return &Importer{rp: rp, x: NewExporter(rp), objs: map[SHA]Imported{}}
+	return &Importer{rp: rp, x: NewExporter(rp), objs: map[SHA]importedRef{}, raws: map[SHA]hash.Hash{}, pointers: map[SHA][]byte{}}
 }
 
 // Lookup returns an object imported by this importer.
 func (im *Importer) Lookup(s SHA) (Imported, bool) {
-	o, ok := im.objs[s]
-	return o, ok
+	r, ok := im.objs[s]
+	if !ok {
+		return Imported{}, false
+	}
+	o := Imported{Type: Type(r.typ), F1: r.f1, Pointer: im.pointers[s]}
+	if raw, ok := im.raws[s]; ok {
+		o.Raw = &raw
+	}
+	return o, true
+}
+
+func (im *Importer) record(s SHA, o Imported) {
+	im.objs[s] = importedRef{f1: o.F1, typ: uint8(o.Type)}
+	if o.Raw != nil {
+		im.raws[s] = *o.Raw
+	}
+	if o.Pointer != nil {
+		im.pointers[s] = o.Pointer
+	}
 }
 
 // Known returns an object imported by this importer or already in the
 // repository (pushes reference existing objects, and thin packs delta
 // against them).
 func (im *Importer) Known(ctx context.Context, s SHA) (Imported, bool, error) {
-	if o, ok := im.objs[s]; ok {
+	if o, ok := im.Lookup(s); ok {
 		return o, true, nil
 	}
 	o, ok, err := im.x.Resolve(ctx, s)
@@ -80,7 +107,7 @@ func (im *Importer) Known(ctx context.Context, s SHA) (Imported, bool, error) {
 			}
 		}
 	}
-	im.objs[s] = imp
+	im.record(s, imp)
 	return imp, true, nil
 }
 
@@ -122,7 +149,7 @@ func (im *Importer) BlobStream(ctx context.Context, r io.Reader, size int64) (SH
 	if SHA(res.Digests.SHA1Git) != s {
 		return SHA{}, fmt.Errorf("git: blob id mismatch (%s, %s)", s, SHA(res.Digests.SHA1Git))
 	}
-	im.objs[s] = Imported{Type: TypeBlob, F1: res.File, Pointer: ptr}
+	im.record(s, Imported{Type: TypeBlob, F1: res.File, Pointer: ptr})
 	return s, nil
 }
 
@@ -197,7 +224,7 @@ func (im *Importer) Tree(ctx context.Context, s SHA, data []byte) error {
 		}
 		imp.Raw = &raw
 	}
-	im.objs[s] = imp
+	im.record(s, imp)
 	return nil
 }
 
@@ -257,7 +284,7 @@ func (im *Importer) Commit(ctx context.Context, s SHA, data []byte) error {
 	if got, err := im.x.CommitSHA(ctx, h); err != nil || got != s {
 		return fmt.Errorf("git: commit %s does not round-trip (got %s): %v", s, got, err)
 	}
-	im.objs[s] = Imported{Type: TypeCommit, F1: h}
+	im.record(s, Imported{Type: TypeCommit, F1: h})
 	return nil
 }
 
@@ -292,7 +319,7 @@ func (im *Importer) Tag(ctx context.Context, s SHA, data []byte) error {
 	if got, err := im.x.TagSHA(ctx, h); err != nil || got != s {
 		return fmt.Errorf("git: tag %s does not round-trip (got %s): %v", s, got, err)
 	}
-	im.objs[s] = Imported{Type: TypeTag, F1: h}
+	im.record(s, Imported{Type: TypeTag, F1: h})
 	return nil
 }
 

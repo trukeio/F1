@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"github.com/pjbgf/sha1cd"
 )
@@ -21,7 +22,8 @@ const (
 )
 
 // maxInlineObject bounds the size of a commit, tree or tag in a pushed pack
-// (those are held in memory); blobs of any size are streamed.
+// (one is held in memory while it is resolved or imported); blobs of any
+// size are streamed.
 const maxInlineObject = 64 << 20
 
 // ErrCollision is returned for an object whose SHA-1 computation shows a
@@ -67,7 +69,8 @@ func (o *objectHasher) sum() (SHA, error) {
 	return s, nil
 }
 
-// packEntry is an entry of a pushed pack.
+// packEntry is an entry of a pushed pack. Entries are kept by value, in
+// pack order: a push of a large history has millions.
 type packEntry struct {
 	off     int64 // offset of the entry header
 	dataOff int64 // offset of the zlib stream
@@ -105,21 +108,100 @@ func (c *countingReader) ReadByte() (byte, error) {
 }
 
 // packSink receives resolved objects: blobs as streams of known size,
-// other objects as bytes.
+// other objects as bytes. The pack keeps commits, trees and tags in its
+// spool; object must not retain data.
 type packSink interface {
 	blob(ctx context.Context, size int64, r io.Reader) (SHA, error)
 	object(t Type, sha SHA, data []byte)
-	// base returns a reader for an object outside the pack (thin packs).
+	// base returns a reader for a blob the sink stored, or for an object
+	// outside the pack (thin packs).
 	base(ctx context.Context, s SHA) (Type, int64, io.ReaderAt, error)
+}
+
+// objectSpool holds the resolved commits, trees and tags of a pushed pack
+// in a temporary file, and in memory only their place in it: a push of a
+// long history has hundreds of thousands of trees, too many to keep.
+type objectSpool struct {
+	f     *os.File
+	end   int64
+	index map[SHA]spooled
+}
+
+type spooled struct {
+	typ Type
+	n   uint32 // at most maxInlineObject
+	off int64
+}
+
+func newObjectSpool(dir string) (*objectSpool, error) {
+	f, err := os.CreateTemp(dir, "receive-*.objects")
+	if err != nil {
+		return nil, err
+	}
+	return &objectSpool{f: f, index: map[SHA]spooled{}}, nil
+}
+
+func (s *objectSpool) put(t Type, sha SHA, data []byte) error {
+	if _, ok := s.index[sha]; ok {
+		return nil
+	}
+	if _, err := s.f.WriteAt(data, s.end); err != nil {
+		return fmt.Errorf("git: spooling objects: %w", err)
+	}
+	s.index[sha] = spooled{typ: t, n: uint32(len(data)), off: s.end}
+	s.end += int64(len(data))
+	return nil
+}
+
+// reader returns a spooled object's content for random access.
+func (s *objectSpool) reader(sha SHA) (Type, int64, io.ReaderAt, bool) {
+	o, ok := s.index[sha]
+	if !ok {
+		return 0, 0, nil, false
+	}
+	return o.typ, int64(o.n), io.NewSectionReader(s.f, o.off, int64(o.n)), true
+}
+
+// get returns a spooled object's content.
+func (s *objectSpool) get(sha SHA) (Type, []byte, error) {
+	o, ok := s.index[sha]
+	if !ok {
+		return 0, nil, fmt.Errorf("git: object %s is not in the pack", sha)
+	}
+	data := make([]byte, o.n)
+	if _, err := s.f.ReadAt(data, o.off); err != nil {
+		return 0, nil, fmt.Errorf("git: reading spooled object: %w", err)
+	}
+	return o.typ, data, nil
+}
+
+// Close removes the spool.
+func (s *objectSpool) Close() error {
+	s.f.Close()
+	return os.Remove(s.f.Name())
 }
 
 // readPack spools a pack from r to a file in dir, then indexes and resolves
 // it: non-delta objects in one sequential pass, deltas against their bases
-// afterwards. Blobs stream into the sink; delta bases are read with random
-// access (from the spool or the sink), never loaded whole, so memory stays
+// afterwards. Blobs stream into the sink; commits, trees and tags go to an
+// object spool, which the caller closes. Delta bases are read with random
+// access (from a spool or the sink), never loaded whole, so memory stays
 // bounded for objects of any size (doc/plan.md, "Streaming in the Git
-// layer").
-func readPack(ctx context.Context, r io.Reader, dir string, sink packSink) (int, error) {
+// layer"), and per object is a few dozen bytes.
+func readPack(ctx context.Context, r io.Reader, dir string, sink packSink) (*objectSpool, int, error) {
+	spool, err := newObjectSpool(dir)
+	if err != nil {
+		return nil, 0, err
+	}
+	n, err := readPackInto(ctx, r, dir, sink, spool)
+	if err != nil {
+		spool.Close()
+		return nil, 0, err
+	}
+	return spool, n, nil
+}
+
+func readPackInto(ctx context.Context, r io.Reader, dir string, sink packSink, spool *objectSpool) (int, error) {
 	f, err := os.CreateTemp(dir, "receive-*.pack")
 	if err != nil {
 		return 0, err
@@ -149,7 +231,7 @@ func readPack(ctx context.Context, r io.Reader, dir string, sink packSink) (int,
 	if string(check.Sum(nil)) != string(trailer[:]) {
 		return 0, errors.New("git: pack checksum mismatch")
 	}
-	p := &pack{f: f, size: size - 20, sink: sink, byOff: map[int64]*packEntry{}, bySHA: map[SHA]*packEntry{}}
+	p := &pack{f: f, size: size - 20, sink: sink, spool: spool, bySHA: map[SHA]int32{}}
 	if err := p.index(ctx); err != nil {
 		return 0, err
 	}
@@ -163,12 +245,18 @@ type pack struct {
 	f       *os.File
 	size    int64 // without the trailer
 	sink    packSink
-	entries []*packEntry
-	byOff   map[int64]*packEntry
-	bySHA   map[SHA]*packEntry
-	// inline holds the content of resolved non-blob objects (bases of
-	// tree deltas, and what the sink needs).
-	inline map[SHA][]byte
+	spool   *objectSpool // resolved commits, trees and tags
+	entries []packEntry  // in pack order, so by increasing offset
+	bySHA   map[SHA]int32
+}
+
+// byOff returns the entry at offset off, or nil.
+func (p *pack) byOff(off int64) *packEntry {
+	i := sort.Search(len(p.entries), func(i int) bool { return p.entries[i].off >= off })
+	if i < len(p.entries) && p.entries[i].off == off {
+		return &p.entries[i]
+	}
+	return nil
 }
 
 func (p *pack) index(ctx context.Context) error {
@@ -184,12 +272,16 @@ func (p *pack) index(ctx context.Context) error {
 		return fmt.Errorf("git: unsupported pack version %d", v)
 	}
 	n := binary.BigEndian.Uint32(hdr[8:12])
-	p.inline = map[SHA][]byte{}
+	if n > 1<<31-1 {
+		return errors.New("git: too many objects in the pack")
+	}
+	p.entries = make([]packEntry, 0, min(n, 1<<20))
 	for i := uint32(0); i < n; i++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		e := &packEntry{off: cr.n}
+		p.entries = append(p.entries, packEntry{off: cr.n})
+		e := &p.entries[len(p.entries)-1]
 		c, err := cr.ReadByte()
 		if err != nil {
 			return fmt.Errorf("git: truncated pack: %w", err)
@@ -222,7 +314,7 @@ func (p *pack) index(ctx context.Context) error {
 				rel = ((rel + 1) << 7) | int64(c&0x7f)
 			}
 			e.baseOff = e.off - rel
-			if e.baseOff < 12 || p.byOff[e.baseOff] == nil {
+			if e.baseOff < 12 || p.byOff(e.baseOff) == nil {
 				return errors.New("git: ofs-delta base is not an earlier entry")
 			}
 		case packRefDelta:
@@ -245,7 +337,7 @@ func (p *pack) index(ctx context.Context) error {
 			}
 		} else {
 			e.typ = Type(e.kind)
-			if err := p.resolved(ctx, e, io.LimitReader(zr, e.size+1)); err != nil {
+			if err := p.resolved(ctx, int32(len(p.entries)-1), io.LimitReader(zr, e.size+1)); err != nil {
 				return err
 			}
 			if n, err := io.Copy(io.Discard, zr); err != nil || n != 0 {
@@ -255,8 +347,6 @@ func (p *pack) index(ctx context.Context) error {
 		if err := zr.Close(); err != nil {
 			return fmt.Errorf("git: pack entry at %d: %w", e.off, err)
 		}
-		p.entries = append(p.entries, e)
-		p.byOff[e.off] = e
 	}
 	if cr.n != p.size {
 		return errors.New("git: trailing data after the pack's objects")
@@ -264,8 +354,10 @@ func (p *pack) index(ctx context.Context) error {
 	return nil
 }
 
-// resolved hands a resolved object's content to the sink and records it.
-func (p *pack) resolved(ctx context.Context, e *packEntry, content io.Reader) error {
+// resolved hands the content of entry i to the sink or the spool and
+// records it.
+func (p *pack) resolved(ctx context.Context, i int32, content io.Reader) error {
+	e := &p.entries[i]
 	var s SHA
 	var err error
 	if e.typ == TypeBlob {
@@ -281,15 +373,16 @@ func (p *pack) resolved(ctx context.Context, e *packEntry, content io.Reader) er
 		h := newObjectHasher(e.typ, e.size)
 		h.Write(data)
 		if s, err = h.sum(); err == nil {
-			p.inline[s] = data
-			p.sink.object(e.typ, s, data)
+			if err = p.spool.put(e.typ, s, data); err == nil {
+				p.sink.object(e.typ, s, data)
+			}
 		}
 	}
 	if err != nil {
 		return err
 	}
 	e.done, e.sha = true, s
-	p.bySHA[s] = e
+	p.bySHA[s] = i
 	return nil
 }
 
@@ -313,7 +406,8 @@ func (e *exactReader) Read(p []byte) (int, error) {
 func (p *pack) resolveDeltas(ctx context.Context) error {
 	for {
 		progress, pending := false, 0
-		for _, e := range p.entries {
+		for i := range p.entries {
+			e := &p.entries[i]
 			if e.done {
 				continue
 			}
@@ -326,7 +420,7 @@ func (p *pack) resolveDeltas(ctx context.Context) error {
 				continue
 			}
 			e.typ = typ
-			if err := p.applyDelta(ctx, e, size, base); err != nil {
+			if err := p.applyDelta(ctx, int32(i), size, base); err != nil {
 				return fmt.Errorf("git: delta at %d: %w", e.off, err)
 			}
 			progress = true
@@ -345,8 +439,10 @@ func (p *pack) resolveDeltas(ctx context.Context) error {
 func (p *pack) baseOf(ctx context.Context, e *packEntry) (Type, int64, io.ReaderAt, error) {
 	var b *packEntry
 	if e.kind == packOfsDelta {
-		b = p.byOff[e.baseOff]
-	} else if b = p.bySHA[e.baseSHA]; b == nil {
+		b = p.byOff(e.baseOff)
+	} else if i, ok := p.bySHA[e.baseSHA]; ok {
+		b = &p.entries[i]
+	} else {
 		// Unresolved deltas are not in bySHA yet; outside the pack, the
 		// repository has it, or a later round will.
 		t, size, ra, err := p.sink.base(ctx, e.baseSHA)
@@ -358,14 +454,15 @@ func (p *pack) baseOf(ctx context.Context, e *packEntry) (Type, int64, io.Reader
 	if !b.done {
 		return 0, 0, nil, nil
 	}
-	if data, ok := p.inline[b.sha]; ok {
-		return b.typ, int64(len(data)), bytesReaderAt(data), nil
+	if t, size, ra, ok := p.spool.reader(b.sha); ok {
+		return t, size, ra, nil
 	}
 	// A blob: read it back from where the sink stored it.
 	return p.sink.base(ctx, b.sha)
 }
 
-func (p *pack) applyDelta(ctx context.Context, e *packEntry, baseSize int64, base io.ReaderAt) error {
+func (p *pack) applyDelta(ctx context.Context, i int32, baseSize int64, base io.ReaderAt) error {
+	e := &p.entries[i]
 	zr, err := zlib.NewReader(io.NewSectionReader(p.f, e.dataOff, p.size-e.dataOff))
 	if err != nil {
 		return err
@@ -390,7 +487,7 @@ func (p *pack) applyDelta(ctx context.Context, e *packEntry, baseSize int64, bas
 	defer pr.Close()
 	size := e.size
 	e.size = dstSize
-	err = p.resolved(ctx, e, pr)
+	err = p.resolved(ctx, i, pr)
 	if err != nil {
 		e.size = size
 	}
