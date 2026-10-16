@@ -36,7 +36,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
 - Hosting F1 on Windows. The server and the admin CLI run on Unix systems (Linux, macOS, BSD); the repository lock uses `flock`. Clients (Git, S3 tools, the native client) may run anywhere.
 - S3 or other remote storage as the blob backend. Version 1 stores packs on local disk. The `Backend` interface stays, so a remote backend can be added later.
 - OIDC login. Planned for a later version (see "Identity and authorization").
-- SVN wire protocol. SVN users migrate to the native client, Git, or S3.
+- SVN wire protocol. SVN users migrate to the native client, Git, or S3. Evaluated and deferred indefinitely (ADR-0017).
 - FUSE or virtual filesystem client.
 - Web UI.
 - Encryption beyond what the storage backend provides.
