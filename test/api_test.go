@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -389,5 +390,34 @@ func TestNamespaceAdmin(t *testing.T) {
 	ns, err := e.admin.Namespaces(ctx)
 	if err != nil || len(ns) != 1 || !ns[0].Config.Git {
 		t.Fatalf("namespaces = %+v, %v", ns, err)
+	}
+}
+
+// /metrics reports requests per API, writes and storage.
+func TestMetrics(t *testing.T) {
+	e := start(t, envOpts{})
+	e.createNS(t, "m", "")
+	put(t, e.admin, "m", "a.txt", "metrics", "new")
+	resp, err := http.Get(e.url + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	body := string(b)
+	for _, want := range []string{
+		`f1_http_requests_total{api="native",code="2xx"}`,
+		`f1_http_request_duration_seconds_bucket{api="native",le="+Inf"}`,
+		"f1_ref_updates_total ",
+		"f1_pack_bytes_written_total ",
+		"f1_repositories 1",
+		"# TYPE f1_pack_bytes gauge",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/metrics lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `namespace="m"`) {
+		t.Error("per-namespace metrics are off by default")
 	}
 }

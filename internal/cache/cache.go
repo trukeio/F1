@@ -119,6 +119,12 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cache: %w", err)
 	}
+	// Keep connections open: each new one costs its pragmas and a schema
+	// parse, which dominated small requests with the default two idle
+	// connections.
+	db.SetMaxOpenConns(32)
+	db.SetMaxIdleConns(32)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 	c := &DB{db: db}
 	if err := c.init(); err != nil {
 		db.Close()
@@ -446,6 +452,25 @@ func (c *DB) ObjectsInPack(ctx context.Context, name string) ([]pack.IndexEntry,
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// EachHash calls fn with the hash of every indexed object.
+func (c *DB) EachHash(ctx context.Context, fn func(hash.Hash)) error {
+	rows, err := c.db.QueryContext(ctx, `SELECT hash FROM objects`)
+	if err != nil {
+		return fmt.Errorf("cache: %w", err)
+	}
+	defer rows.Close()
+	var b []byte
+	for rows.Next() {
+		if err := rows.Scan(&b); err != nil {
+			return fmt.Errorf("cache: %w", err)
+		}
+		var h hash.Hash
+		copy(h[:], b)
+		fn(h)
+	}
+	return rows.Err()
 }
 
 // CountObjects returns the number of indexed objects.

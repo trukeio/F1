@@ -51,6 +51,18 @@ type Server struct {
 	S3 S3 `toml:"s3"`
 	// GC configures garbage collection.
 	GC GC `toml:"gc"`
+	// Metrics configures /metrics on the main listener.
+	Metrics Metrics `toml:"metrics"`
+}
+
+// Metrics configures the Prometheus endpoint (doc/plan.md, "Operations").
+type Metrics struct {
+	// Enabled serves /metrics on the main listener, without
+	// authentication. Default true.
+	Enabled bool `toml:"enabled"`
+	// Namespaces adds per-namespace storage metrics, which reveal
+	// namespace names to whoever can reach /metrics. Default false.
+	Namespaces bool `toml:"namespaces"`
 }
 
 // GC configures garbage collection (doc/plan.md, "Retention and garbage
@@ -127,7 +139,8 @@ func Default() Config {
 				CreateBucket: true,
 				UploadExpiry: "168h",
 			},
-			GC: GC{Interval: "24h", Grace: "24h"},
+			GC:      GC{Interval: "24h", Grace: "24h"},
+			Metrics: Metrics{Enabled: true},
 		},
 		Log: Log{
 			Level:  "info",

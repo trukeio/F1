@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver "sqlite"
@@ -74,6 +75,12 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("serverdb: %w", err)
 	}
+	// Keep connections open: each new one costs its pragmas and a schema
+	// parse, which dominated small requests with the default two idle
+	// connections.
+	db.SetMaxOpenConns(32)
+	db.SetMaxIdleConns(32)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 	d := &DB{db: db}
 	if err := d.migrate(ctx); err != nil {
 		db.Close()
@@ -84,6 +91,32 @@ func Open(ctx context.Context, path string) (*DB, error) {
 
 // Close closes the database.
 func (d *DB) Close() error { return d.db.Close() }
+
+// BackupTo writes a consistent copy of the database to path (VACUUM INTO,
+// while the server runs), through a temporary file renamed into place.
+func (d *DB) BackupTo(ctx context.Context, path string) error {
+	tmp := path + ".tmp"
+	os.Remove(tmp)
+	if _, err := d.db.ExecContext(ctx, `VACUUM INTO ?`, tmp); err != nil {
+		return fmt.Errorf("serverdb: backup: %w", err)
+	}
+	f, err := os.OpenFile(tmp, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("serverdb: backup: %w", err)
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("serverdb: backup: %w", err)
+	}
+	return nil
+}
 
 // Version returns the schema version.
 func (d *DB) Version(ctx context.Context) (int, error) {

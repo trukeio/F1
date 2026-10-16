@@ -42,7 +42,7 @@ type envOpts struct {
 	setup   func(dataDir string) // runs before the server starts
 }
 
-func start(t *testing.T, opts envOpts) *env {
+func start(t testing.TB, opts envOpts) *env {
 	t.Helper()
 	dataDir := opts.dataDir
 	fresh := dataDir == ""
@@ -118,7 +118,7 @@ func start(t *testing.T, opts envOpts) *env {
 	return e
 }
 
-func (e *env) setACL(t *testing.T, ns, principal, prefix, perms string) {
+func (e *env) setACL(t testing.TB, ns, principal, prefix, perms string) {
 	t.Helper()
 	var p []string
 	if perms != "" {
@@ -129,7 +129,7 @@ func (e *env) setACL(t *testing.T, ns, principal, prefix, perms string) {
 	}
 }
 
-func (e *env) createNS(t *testing.T, name, preset string) {
+func (e *env) createNS(t testing.TB, name, preset string) {
 	t.Helper()
 	if _, err := e.admin.CreateNamespace(ctx, f1client.CreateNamespaceRequest{Name: name, Preset: preset}); err != nil {
 		t.Fatal(err)

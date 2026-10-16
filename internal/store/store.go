@@ -24,6 +24,7 @@ import (
 	"github.com/trukeio/f1/internal/backend"
 	"github.com/trukeio/f1/internal/cache"
 	"github.com/trukeio/f1/internal/hash"
+	"github.com/trukeio/f1/internal/metrics"
 	"github.com/trukeio/f1/internal/object"
 	"github.com/trukeio/f1/internal/pack"
 	"github.com/trukeio/f1/internal/repodir"
@@ -36,6 +37,7 @@ type Options struct {
 	SmallPack      int64         // packs below this size are "small" (8 MiB)
 	SmallPackLimit int           // consolidate when more small packs exist (256)
 	DeleteGrace    time.Duration // keep replaced packs this long for in-flight reads (1 h)
+	ReadCache      int64         // bytes of recently read records kept in memory (64 MiB; negative: none)
 	Logger         *slog.Logger
 	// Backend overrides the filesystem backend rooted at the repository
 	// directory; tests use it to observe reads.
@@ -60,6 +62,9 @@ func (o *Options) defaults() {
 	} else if o.DeleteGrace == 0 {
 		o.DeleteGrace = time.Hour
 	}
+	if o.ReadCache == 0 {
+		o.ReadCache = 64 << 20
+	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
@@ -82,9 +87,12 @@ type Store struct {
 	consolidating atomic.Bool // a background consolidation is running
 	holds         int         // active holds; guarded by maint
 
-	gcMu    sync.RWMutex // GC epoch; Has holds it shared, Condemn exclusively (gc.go)
-	touchMu sync.Mutex   // the touched set's map
-	condMu  sync.Mutex   // the published condemned set
+	reads   *readCache     // recently read records (readcache.go)
+	filter  filter         // existence filter (filter.go)
+	builds  sync.WaitGroup // filter builds
+	gcMu    sync.RWMutex   // GC epoch; Has holds it shared, Condemn exclusively (gc.go)
+	touchMu sync.Mutex     // the touched set's map
+	condMu  sync.Mutex     // the published condemned set
 	gc      gcState
 }
 
@@ -108,7 +116,7 @@ type OpenReport struct {
 // updating cache.db as needed.
 func Open(ctx context.Context, dir *repodir.Dir, opts Options) (*Store, OpenReport, error) {
 	opts.defaults()
-	s := &Store{dir: dir, be: opts.Backend, opts: opts, log: opts.Logger}
+	s := &Store{dir: dir, be: opts.Backend, opts: opts, log: opts.Logger, reads: newReadCache(opts.ReadCache)}
 	if s.be == nil {
 		fsb, err := backend.NewFS(dir.Path())
 		if err != nil {
@@ -120,6 +128,7 @@ func Open(ctx context.Context, dir *repodir.Dir, opts Options) (*Store, OpenRepo
 	if err != nil {
 		return nil, rep, err
 	}
+	s.rebuildFilter()
 	return s, rep, nil
 }
 
@@ -305,9 +314,15 @@ func (s *Store) hasLocked(ctx context.Context, h hash.Hash) (bool, error) {
 	}
 	s.mu.Unlock()
 	if !inOpen {
-		ok, err := s.cache.Has(ctx, h)
-		if err != nil || !ok {
-			return false, err
+		if s.filter.notIndexed(h) {
+			return false, nil
+		}
+		if !s.filter.isConfirmed(h) {
+			ok, err := s.cache.Has(ctx, h)
+			if err != nil || !ok {
+				return false, err
+			}
+			s.filter.confirm(h)
 		}
 		if s.condemnedNow(h) {
 			return false, nil
@@ -451,9 +466,21 @@ func (s *Store) sealLocked(ctx context.Context) error {
 	if err := s.publish(ctx, op.path, op.name); err != nil {
 		return err
 	}
+	packsSealed.Inc(nil)
+	objectsWritten.Add(nil, float64(len(entries)))
+	packBytesWritten.Add(nil, float64(size))
 	np := cache.NewPack{Name: op.name, Size: size, Entries: entries, Digests: op.digests}
 	if err := s.cache.AddPacksReplacing(ctx, s.freshCopies(entries), np); err != nil {
 		return err
+	}
+	// Under s.mu: an existence check sees the objects in the open pack or
+	// in the filter, never in neither.
+	hs := make([]hash.Hash, len(entries))
+	for i, e := range entries {
+		hs[i] = e.Hash
+	}
+	if s.filter.added(hs) {
+		s.rebuildFilter()
 	}
 	s.maybeConsolidate()
 	return nil
@@ -490,6 +517,9 @@ func (s *Store) Get(ctx context.Context, h hash.Hash) (pack.Record, error) {
 		}
 	}
 	s.mu.Unlock()
+	if rec, ok := s.reads.get(h); ok {
+		return rec, nil
+	}
 	loc, ok, err := s.cache.Lookup(ctx, h)
 	if err != nil {
 		return pack.Record{}, err
@@ -497,8 +527,18 @@ func (s *Store) Get(ctx context.Context, h hash.Hash) (pack.Record, error) {
 	if !ok {
 		return pack.Record{}, fmt.Errorf("%w: %s", ErrNotFound, h)
 	}
-	return readRecord(backend.NewReaderAt(ctx, s.be, packKey(loc.Pack)), loc.Entry)
+	rec, err := readRecord(backend.NewReaderAt(ctx, s.be, packKey(loc.Pack)), loc.Entry)
+	if err == nil {
+		s.reads.put(rec)
+	}
+	return rec, err
 }
+
+var (
+	packsSealed      = metrics.Default.NewCounter("f1_packs_sealed_total", "Packs sealed by writes.")
+	objectsWritten   = metrics.Default.NewCounter("f1_objects_written_total", "Objects written to sealed packs.")
+	packBytesWritten = metrics.Default.NewCounter("f1_pack_bytes_written_total", "Bytes of packs sealed by writes.")
+)
 
 // ErrNotFound is returned by Get for an object that is not stored.
 var ErrNotFound = errors.New("store: object not found")
@@ -532,5 +572,6 @@ func (s *Store) Close(ctx context.Context) error {
 		s.idle.Stop()
 	}
 	err := s.sealLocked(ctx)
+	s.builds.Wait()
 	return errors.Join(err, s.cache.Close())
 }

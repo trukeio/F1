@@ -35,3 +35,4 @@ go.work.sum
 # Build output and local data directory of example.toml
 /bin/
 /data/
+/bench.txt

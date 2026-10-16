@@ -94,6 +94,12 @@ func (s *memStore) Get(_ context.Context, h f1hash.Hash) (pack.Record, error) {
 	return rec, nil
 }
 
+func (s *memStore) getsOf(t object.Type) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gets[t]
+}
+
 func (s *memStore) resetGets() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -328,10 +334,10 @@ func TestReaderRandomAccess(t *testing.T) {
 			t.Fatalf("ReadAt(%d, %d) returned wrong bytes", off, n)
 		}
 		want := overlapping(refs, uint64(off), uint64(n))
-		if got := s.gets[object.TypeChunk]; got != want {
+		if got := s.getsOf(object.TypeChunk); got != want {
 			t.Fatalf("ReadAt(%d, %d) fetched %d chunks, %d overlap", off, n, got, want)
 		}
-		if got := s.gets[object.TypeFileIndex]; got > int(f.Level)*2 {
+		if got := s.getsOf(object.TypeFileIndex); got > int(f.Level)*2 {
 			t.Fatalf("ReadAt fetched %d file index nodes for a level-%d file", got, f.Level)
 		}
 	}

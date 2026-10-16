@@ -134,6 +134,20 @@ func adminHandler(m *Manager, gcGrace time.Duration, log *slog.Logger) http.Hand
 		}
 		reply(w, res, err)
 	})
+	mux.HandleFunc("POST /backup", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Dir string `json:"dir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !filepath.IsAbs(req.Dir) {
+			reply(w, nil, fmt.Errorf("server: backup needs an absolute directory"))
+			return
+		}
+		rep, err := m.Backup(r.Context(), req.Dir)
+		if err == nil {
+			log.Info("backup written", "dir", req.Dir, "repositories", len(rep.Repos))
+		}
+		reply(w, rep, err)
+	})
 	mux.HandleFunc("POST /repos/{ns}/archive", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Path string `json:"path"`
@@ -229,6 +243,14 @@ func (c *AdminClient) Do(ctx context.Context, action, ns string) error {
 // defaults).
 func (c *AdminClient) Create(ctx context.Context, ns, preset string) error {
 	return c.call(ctx, http.MethodPost, "/repos/"+ns+"/create", map[string]string{"preset": preset}, nil)
+}
+
+// Backup asks the server to write a backup to dir (absolute, writable by
+// the server).
+func (c *AdminClient) Backup(ctx context.Context, dir string) (BackupReport, error) {
+	var rep BackupReport
+	err := c.call(ctx, http.MethodPost, "/backup", map[string]string{"dir": dir}, &rep)
+	return rep, err
 }
 
 // GC asks the server to collect garbage in ns.

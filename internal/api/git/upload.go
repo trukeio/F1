@@ -328,7 +328,9 @@ func (s *Server) parseFetchArgs(args []string) (*fetchRequest, bool, bool, error
 			done = true
 		case "no-progress":
 			progress = false
-		case "thin-pack", "ofs-delta", "wait-for-done":
+		case "ofs-delta":
+			req.ofsDelta = true
+		case "thin-pack", "wait-for-done":
 		case "want-ref", "packfile-uris", "sideband-all":
 			return nil, false, false, fmt.Errorf("%s is not supported", k)
 		}
@@ -379,7 +381,7 @@ func (s *Server) fetchV2(ctx context.Context, w http.ResponseWriter, rp *repo.Re
 	if p.err != nil {
 		return p.err
 	}
-	if err := writePack(ctx, &sideband{p: p}, x, res.objects); err != nil {
+	if err := writePack(ctx, &sideband{p: p}, x, res.objects, req.ofsDelta); err != nil {
 		s.Log.Warn("git fetch interrupted", "namespace", rp.Meta().UUID, "err", err)
 		return nil // the response has started; the client sees a broken pack
 	}
@@ -496,7 +498,7 @@ func (s *Server) serveV0(ctx context.Context, w http.ResponseWriter, body io.Rea
 		}
 		args = append(args, line)
 	}
-	for _, c := range []string{"include-tag", "deepen-relative"} {
+	for _, c := range []string{"include-tag", "deepen-relative", "ofs-delta"} {
 		if caps[c] {
 			args = append(args, c)
 		}
@@ -553,7 +555,7 @@ func (s *Server) serveV0(ctx context.Context, w http.ResponseWriter, body io.Rea
 	if caps["side-band-64k"] || caps["side-band"] {
 		out = &sideband{p: p}
 	}
-	if err := writePack(ctx, out, x, res.objects); err != nil {
+	if err := writePack(ctx, out, x, res.objects, req.ofsDelta); err != nil {
 		s.Log.Warn("git fetch interrupted", "err", err)
 		return nil
 	}

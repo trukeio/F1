@@ -20,7 +20,7 @@ import (
 )
 
 // gitCmd runs git in dir with a clean environment and returns its output.
-func gitCmd(t *testing.T, dir string, env []string, args ...string) string {
+func gitCmd(t testing.TB, dir string, env []string, args ...string) string {
 	t.Helper()
 	out, err := gitRun(dir, env, args...)
 	if err != nil {
@@ -43,7 +43,7 @@ func gitRun(dir string, env []string, args ...string) (string, error) {
 	return out.String(), err
 }
 
-func requireGit(t *testing.T) {
+func requireGit(t testing.TB) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
@@ -354,5 +354,61 @@ func TestGitCacheRebuild(t *testing.T) {
 	gitCmd(t, "", nil, "clone", "-q", "--mirror", e2.gitURL("admin", "fix"), dst)
 	if gitRefs(t, dst, "refs/heads") != gitRefs(t, src, "refs/heads") {
 		t.Fatal("clone after rebuild differs")
+	}
+}
+
+// Fetch packs carry deltas: a file edited in many commits arrives mostly
+// as deltas, and the pack is far smaller than the undeltified objects
+// (doc/plan.md, phase 9).
+func TestGitFetchDeltas(t *testing.T) {
+	requireGit(t)
+	src := t.TempDir()
+	gitCmd(t, src, nil, "init", "-q", "-b", "main")
+	var content strings.Builder
+	for i := range 2000 {
+		fmt.Fprintf(&content, "line %d of a source file that is edited in every commit\n", i)
+	}
+	text := content.String()
+	for i := range 60 {
+		text = strings.Replace(text, fmt.Sprintf("line %d of", i*30), fmt.Sprintf("LINE %d OF", i*30), 1)
+		os.MkdirAll(filepath.Join(src, "dir"), 0o755)
+		os.WriteFile(filepath.Join(src, "dir", "file.txt"), []byte(text), 0o644)
+		gitCmd(t, src, nil, "add", "-A")
+		gitCmd(t, src, nil, "commit", "-q", "-m", fmt.Sprint("edit ", i))
+	}
+	e := start(t, envOpts{})
+	e.gitNamespace(t, "deltas")
+	gitCmd(t, src, nil, "push", "-q", e.gitURL("admin", "deltas"), "main")
+	for _, proto := range []string{"protocol.version=2", "protocol.version=0"} {
+		dst := filepath.Join(t.TempDir(), "clone")
+		gitCmd(t, "", nil, "-c", proto, "clone", "-q", "--no-local", e.gitURL("admin", "deltas"), dst)
+		if out, err := gitRun(dst, nil, "fsck", "--full"); err != nil {
+			t.Fatalf("git fsck: %v\n%s", err, out)
+		}
+		packs, _ := filepath.Glob(filepath.Join(dst, ".git", "objects", "pack", "*.idx"))
+		if len(packs) != 1 {
+			t.Fatalf("%d packs", len(packs))
+		}
+		verify := gitCmd(t, dst, nil, "verify-pack", "-v", packs[0])
+		blobs, deltas := 0, 0
+		for _, line := range strings.Split(verify, "\n") {
+			f := strings.Fields(line)
+			if len(f) >= 5 && (f[1] == "blob" || f[1] == "tree") {
+				if f[1] == "blob" {
+					blobs++
+				}
+				if len(f) >= 7 && f[1] == "blob" {
+					deltas++ // a delta line has depth and base fields
+				}
+			}
+		}
+		st, err := os.Stat(strings.TrimSuffix(packs[0], ".idx") + ".pack")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s: %d blobs, %d as deltas, pack %d KiB for %d KiB of file versions", proto, blobs, deltas, st.Size()>>10, 60*len(text)>>10)
+		if blobs != 60 || deltas < 55 || st.Size() > int64(len(text))*10 {
+			t.Fatalf("%s: %d blobs, %d deltas, pack %d bytes", proto, blobs, deltas, st.Size())
+		}
 	}
 }

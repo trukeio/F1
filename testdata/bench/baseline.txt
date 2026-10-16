@@ -1,0 +1,31 @@
+goos: linux
+goarch: amd64
+pkg: github.com/trukeio/f1/test
+cpu: Intel(R) Core(TM) i5-9400 CPU @ 2.90GHz
+BenchmarkIngest-6         	      20	 154621270 ns/op	 434.02 MB/s
+BenchmarkIngest-6         	      21	 154318489 ns/op	 434.87 MB/s
+BenchmarkIngest-6         	      21	 154380365 ns/op	 434.70 MB/s
+BenchmarkIngest-6         	      21	 154271241 ns/op	 435.01 MB/s
+BenchmarkIngest-6         	      21	 154236190 ns/op	 435.10 MB/s
+BenchmarkSmallPut-6       	   14634	    289757 ns/op	      3451 puts/s
+BenchmarkSmallPut-6       	   10000	    335951 ns/op	      2977 puts/s
+BenchmarkSmallPut-6       	   10000	    376306 ns/op	      2657 puts/s
+BenchmarkSmallPut-6       	   10000	    507651 ns/op	      1970 puts/s
+BenchmarkSmallPut-6       	   10000	    588528 ns/op	      1699 puts/s
+BenchmarkS3GetLatency-6   	    7262	    446011 ns/op
+BenchmarkS3GetLatency-6   	    7221	    567759 ns/op
+BenchmarkS3GetLatency-6   	    7998	    461116 ns/op
+BenchmarkS3GetLatency-6   	    8035	    515454 ns/op
+BenchmarkS3GetLatency-6   	    7636	    472433 ns/op
+BenchmarkGetLarge-6       	      90	  40651666 ns/op	1650.83 MB/s
+BenchmarkGetLarge-6       	      85	  41068306 ns/op	1634.08 MB/s
+BenchmarkGetLarge-6       	      87	  41229075 ns/op	1627.71 MB/s
+BenchmarkGetLarge-6       	      85	  41408989 ns/op	1620.64 MB/s
+BenchmarkGetLarge-6       	      87	  41549336 ns/op	1615.16 MB/s
+BenchmarkGitClone-6       	       6	 530899765 ns/op	         0.4329 pack-MiB
+BenchmarkGitClone-6       	       6	 531300740 ns/op	         0.4329 pack-MiB
+BenchmarkGitClone-6       	       6	 528733074 ns/op	         0.4329 pack-MiB
+BenchmarkGitClone-6       	       6	 525888379 ns/op	         0.4329 pack-MiB
+BenchmarkGitClone-6       	       6	 527179595 ns/op	         0.4329 pack-MiB
+PASS
+ok  	github.com/trukeio/f1/test	210.166s

@@ -107,7 +107,7 @@ func rawS3(t *testing.T, req *http.Request) (int, string) {
 }
 
 // createBucket creates a bucket through S3 as the server administrator.
-func (e *env) createBucket(t *testing.T, name string) {
+func (e *env) createBucket(t testing.TB, name string) {
 	t.Helper()
 	if _, err := e.s3client("admin").CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(name)}); err != nil {
 		t.Fatalf("CreateBucket %s: %v", name, err)

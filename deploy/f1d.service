@@ -1,0 +1,54 @@
+# systemd unit for f1d. Install:
+#   useradd --system --home-dir /var/lib/f1 --shell /usr/sbin/nologin f1
+#   install -m 0755 bin/f1d /usr/local/bin/f1d
+#   install -m 0640 -g f1 deploy/f1d.toml /etc/f1/f1d.toml   (adjust data_dir and listeners)
+#   install -m 0644 deploy/f1d.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now f1d
+# Admin commands run as the f1 user against the same configuration, for
+# example: sudo -u f1 f1d user add --config /etc/f1/f1d.toml alice
+[Unit]
+Description=F1 storage server
+Documentation=https://github.com/trukeio/F1/blob/main/doc/admin.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=f1
+Group=f1
+ExecStart=/usr/local/bin/f1d serve --config /etc/f1/f1d.toml
+Restart=on-failure
+# f1d finishes requests and seals packs within 30 s of SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+LimitNOFILE=65536
+StateDirectory=f1
+StateDirectoryMode=0700
+ConfigurationDirectory=f1
+UMask=0077
+
+# Hardening: f1d needs only its data directory.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/f1
+
+[Install]
+WantedBy=multi-user.target

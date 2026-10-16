@@ -25,6 +25,27 @@ type Reader struct {
 
 	chunkHash f1hash.Hash
 	chunkData []byte
+
+	// Read-ahead for sequential reads: chunks after the last one read, in
+	// the same leaf node, fetched in the background.
+	lastEnd int64 // where the last ReadAt ended
+	stream  int   // consecutive ReadAt calls that continued the previous one
+	ahead   map[f1hash.Hash]*fetch
+}
+
+// readAhead is the number of chunks fetched ahead of a streaming reader:
+// one whose last readAheadAfter reads each started where the previous one
+// ended. A single read, of any size, never reads ahead.
+const (
+	readAhead      = 4
+	readAheadAfter = 2
+)
+
+// fetch is a chunk being fetched in the background.
+type fetch struct {
+	done chan struct{}
+	data []byte
+	err  error
 }
 
 // node is a list of refs with their cumulative end offsets.
@@ -116,7 +137,13 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, errors.New("content: negative offset")
 	}
+	if off == r.lastEnd && off > 0 {
+		r.stream++
+	} else {
+		r.stream = 0
+	}
 	n := 0
+	defer func() { r.lastEnd = off + int64(n) }()
 	for n < len(p) {
 		pos := off + int64(n)
 		if pos >= r.size {
@@ -140,6 +167,7 @@ func (r *Reader) chunkAt(pos uint64) ([]byte, uint64, error) {
 		ref := cur.refs[i]
 		base += start
 		if depth == len(r.path) {
+			r.prefetch(cur, i)
 			data, err := r.chunk(ref)
 			return data, base, err
 		}
@@ -170,11 +198,42 @@ func (r *Reader) fileIndex(ref object.Ref, level uint64) (node, error) {
 	return n, nil
 }
 
+// prefetch starts fetching the chunks after leaf.refs[i] for a streaming
+// reader.
+func (r *Reader) prefetch(leaf node, i int) {
+	if r.stream < readAheadAfter {
+		return
+	}
+	if r.ahead == nil {
+		r.ahead = map[f1hash.Hash]*fetch{}
+	}
+	for j := i + 1; j <= i+readAhead && j < len(leaf.refs); j++ {
+		h := leaf.refs[j].Hash
+		if _, ok := r.ahead[h]; ok || h == r.chunkHash {
+			continue
+		}
+		f := &fetch{done: make(chan struct{})}
+		r.ahead[h] = f
+		go func() {
+			defer close(f.done)
+			f.data, f.err = getPayload(r.ctx, r.store, h, object.TypeChunk)
+		}()
+	}
+}
+
 func (r *Reader) chunk(ref object.Ref) ([]byte, error) {
 	if ref.Hash == r.chunkHash && r.chunkData != nil {
 		return r.chunkData, nil
 	}
-	data, err := getPayload(r.ctx, r.store, ref.Hash, object.TypeChunk)
+	var data []byte
+	var err error
+	if f, ok := r.ahead[ref.Hash]; ok {
+		delete(r.ahead, ref.Hash)
+		<-f.done
+		data, err = f.data, f.err
+	} else {
+		data, err = getPayload(r.ctx, r.store, ref.Hash, object.TypeChunk)
+	}
 	if err != nil {
 		return nil, err
 	}

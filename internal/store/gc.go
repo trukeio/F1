@@ -371,6 +371,11 @@ func (s *Store) Sweep(ctx context.Context, condemned map[hash.Hash]struct{}, dry
 	if err != nil {
 		return res, err
 	}
+	// Removed hashes stay in the Bloom filter until it is rebuilt; the
+	// confirmed set forgets them now.
+	s.filter.removed()
+	s.rebuildFilter()
+	s.reads.clear()
 	if _, err := s.deleteDue(ctx); err != nil {
 		return res, err
 	}

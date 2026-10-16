@@ -16,6 +16,7 @@ import (
 
 	"github.com/trukeio/f1/internal/content"
 	"github.com/trukeio/f1/internal/hash"
+	"github.com/trukeio/f1/internal/metrics"
 	"github.com/trukeio/f1/internal/object"
 	"github.com/trukeio/f1/internal/pack"
 	"github.com/trukeio/f1/internal/policy"
@@ -354,8 +355,11 @@ func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, opts UpdateO
 		return err
 	}
 	r.refs = next
+	refUpdates.Add(nil, float64(len(updates)))
 	return nil
 }
+
+var refUpdates = metrics.Default.NewCounter("f1_ref_updates_total", "Ref updates (commits, pushes, ref changes).")
 
 // ReadCommit reads a commit object.
 func (r *Repo) ReadCommit(ctx context.Context, h hash.Hash) (*object.Commit, error) {

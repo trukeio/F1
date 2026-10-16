@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/trukeio/f1/internal/logging"
 	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/server"
+	"github.com/trukeio/f1/internal/serverdb"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -29,6 +32,7 @@ Commands:
   serve     run the server
   fsck      check a repository (offline; refuses while a server has it open)
   gc        collect garbage in a repository (through a running server, or offline)
+  backup    back up server.db and every repository to a directory (incremental)
   repo      manage repositories: list, freeze, archive, import, attach, ...
   ns        create namespaces
   user      manage local users
@@ -59,6 +63,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fsck(ctx, args[1:], stdout, stderr)
 	case "gc":
 		return gcCmd(ctx, args[1:], stdout, stderr)
+	case "backup":
+		return backupCmd(ctx, args[1:], stdout, stderr)
 	case "repo":
 		return repoCmd(ctx, args[1:], stdout, stderr)
 	case "ns", "user", "token", "s3key", "acl":
@@ -243,5 +249,74 @@ func gcCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "%s %d objects (%d bytes): %d packs deleted, %d rewritten; %d unreachable objects kept in mostly live packs; %d retained commits, %d live objects (%s)\n",
 		verb, res.DeletedObjects, res.DeletedBytes, len(res.PacksDeleted), len(res.PacksRewritten), res.Kept, res.Retained, res.Marked, res.Duration)
+	return 0
+}
+
+func backupCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprint(stderr, "Usage: f1d backup [--config f1d.toml] <directory>\n"+
+			"Writes <directory>/server.db and <directory>/repos/<ns>/; run it again to update the backup.\n"+
+			"Restore: f1d repo import <directory>/repos/<ns> for each repository, with the backed up server.db.\n")
+		fs.PrintDefaults()
+	}
+	configPath := fs.String("config", "f1d.toml", "path to the configuration file")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return 2
+	}
+	fail := func(err error) int {
+		fmt.Fprintf(stderr, "f1d backup: %v\n", err)
+		return 1
+	}
+	dst, err := filepath.Abs(fs.Arg(0))
+	if err != nil {
+		return fail(err)
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return fail(err)
+	}
+	var rep server.BackupReport
+	if c, ok := server.DialAdmin(cfg.Server.DataDir); ok {
+		if rep, err = c.Backup(ctx, dst); err != nil {
+			return fail(err)
+		}
+	} else {
+		// Offline: open server.db and the repositories directly.
+		db, err := serverdb.Open(ctx, filepath.Join(cfg.Server.DataDir, server.ServerDB))
+		if err != nil {
+			return fail(err)
+		}
+		defer db.Close()
+		mgr, err := server.OpenManager(ctx, cfg.Server.DataDir, db, slog.New(slog.DiscardHandler), repo.Options{})
+		if err != nil {
+			return fail(err)
+		}
+		rep, err = mgr.Backup(ctx, dst)
+		if cerr := mgr.Close(ctx); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return fail(err)
+		}
+	}
+	names := make([]string, 0, len(rep.Repos))
+	for ns := range rep.Repos {
+		names = append(names, ns)
+	}
+	sort.Strings(names)
+	for _, ns := range names {
+		i := rep.Repos[ns]
+		fmt.Fprintf(stdout, "%s: %d packs, %d copied (%d bytes), %d removed\n", ns, i.Packs, i.Copied, i.Bytes, i.Removed)
+	}
+	fmt.Fprintf(stdout, "backup of %d repositories in %s\n", len(rep.Repos), dst)
 	return 0
 }

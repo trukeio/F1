@@ -41,6 +41,11 @@ func init() {
 	encoder, err = zstd.NewWriter(nil,
 		zstd.WithEncoderLevel(zstd.SpeedDefault),
 		zstd.WithEncoderCRC(false), // payloads are verified by their hash
+		// Chunks are at most 256 KiB and other objects small: a 1 MiB
+		// window compresses them as well as the default 8 MiB one, and
+		// keeps the encoders' history buffers (one per concurrent
+		// encoding) small.
+		zstd.WithWindowSize(1<<20),
 		zstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)))
 	if err != nil {
 		panic(err)

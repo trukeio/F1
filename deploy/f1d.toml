@@ -1,0 +1,24 @@
+# f1d configuration for deploy/f1d.service and the container image (data
+# in /var/lib/f1; mount a volume there in a container). See example.toml
+# for every key and doc/admin.md for operations.
+
+[server]
+data_dir = "/var/lib/f1"
+# Behind a TLS-terminating reverse proxy, listen on localhost only.
+listen = "0.0.0.0:8080"
+
+[server.s3]
+listen = "0.0.0.0:9000"
+region = "us-east-1"
+# domain = "s3.example.com"
+
+[server.gc]
+interval = "24h"
+grace = "24h"
+
+[server.metrics]
+enabled = true
+
+[log]
+level = "info"
+format = "json"

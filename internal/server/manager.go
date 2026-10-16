@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/trukeio/f1/internal/gc"
+	"github.com/trukeio/f1/internal/metrics"
 	"github.com/trukeio/f1/internal/policy"
 	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/repodir"
@@ -329,13 +330,101 @@ func ArchiveToFile(ctx context.Context, path string, archive func(io.Writer) (re
 	return info, nil
 }
 
+var (
+	gcRuns         = metrics.Default.NewCounter("f1_gc_runs_total", "Garbage collections by result (done, skipped, failed, dry_run).")
+	gcDeletedObjs  = metrics.Default.NewCounter("f1_gc_deleted_objects_total", "Objects deleted by garbage collection.")
+	gcDeletedBytes = metrics.Default.NewCounter("f1_gc_deleted_bytes_total", "Stored bytes deleted by garbage collection.")
+)
+
 // GC collects garbage in a repository (see gc.Run).
 func (m *Manager) GC(ctx context.Context, ns string, opts gc.Options) (*gc.Result, error) {
 	r, err := m.Get(ns)
 	if err != nil {
 		return nil, err
 	}
-	return gc.Run(ctx, r, opts)
+	res, err := gc.Run(ctx, r, opts)
+	switch {
+	case err != nil:
+		gcRuns.Inc(metrics.Labels{"result": "failed"})
+	case res.Skipped != "":
+		gcRuns.Inc(metrics.Labels{"result": "skipped"})
+	case res.DryRun:
+		gcRuns.Inc(metrics.Labels{"result": "dry_run"})
+	default:
+		gcRuns.Inc(metrics.Labels{"result": "done"})
+		gcDeletedObjs.Add(nil, float64(res.DeletedObjects))
+		gcDeletedBytes.Add(nil, float64(res.DeletedBytes))
+	}
+	return res, err
+}
+
+// BackupReport describes a backup.
+type BackupReport struct {
+	Repos map[string]repo.BackupInfo `json:"repos"`
+}
+
+// Backup writes server.db and every repository to dst (doc/plan.md,
+// "Operations"): dst/server.db and dst/repos/<ns>/, each repository
+// brought up to date incrementally (see repo.Repo.Backup).
+func (m *Manager) Backup(ctx context.Context, dst string) (BackupReport, error) {
+	rep := BackupReport{Repos: map[string]repo.BackupInfo{}}
+	if err := os.MkdirAll(filepath.Join(dst, ReposDir), 0o700); err != nil {
+		return rep, fmt.Errorf("server: backup: %w", err)
+	}
+	if err := m.db.BackupTo(ctx, filepath.Join(dst, ServerDB)); err != nil {
+		return rep, err
+	}
+	for _, ns := range m.Names() {
+		r, err := m.Get(ns)
+		if err != nil {
+			continue // detached meanwhile
+		}
+		info, err := r.Backup(ctx, filepath.Join(dst, ReposDir, ns))
+		if err != nil {
+			return rep, fmt.Errorf("%s: %w", ns, err)
+		}
+		rep.Repos[ns] = info
+	}
+	return rep, nil
+}
+
+// CollectMetrics registers the repositories' storage metrics, computed at
+// scrape time from their pack indexes; perNamespace adds a series per
+// namespace.
+func (m *Manager) CollectMetrics(reg *metrics.Registry, perNamespace bool) {
+	reg.Collect(func(emit func(name, help, typ string, l metrics.Labels, v float64)) {
+		ctx := context.Background()
+		m.mu.Lock()
+		repos := make(map[string]*repo.Repo, len(m.repos))
+		for ns, r := range m.repos {
+			repos[ns] = r
+		}
+		m.mu.Unlock()
+		emit("f1_repositories", "Open repositories.", "gauge", nil, float64(len(repos)))
+		var packs, objects, bytes float64
+		for ns, r := range repos {
+			list, err := r.Store().Cache().Packs(ctx)
+			if err != nil {
+				continue
+			}
+			var p, o, b float64
+			for _, pk := range list {
+				p++
+				o += float64(pk.Count)
+				b += float64(pk.Size)
+			}
+			packs, objects, bytes = packs+p, objects+o, bytes+b
+			if perNamespace {
+				l := metrics.Labels{"namespace": ns}
+				emit("f1_namespace_packs", "Packs per namespace.", "gauge", l, p)
+				emit("f1_namespace_pack_objects", "Objects in packs per namespace (garbage included).", "gauge", l, o)
+				emit("f1_namespace_pack_bytes", "Pack bytes per namespace.", "gauge", l, b)
+			}
+		}
+		emit("f1_packs", "Packs in all repositories.", "gauge", nil, packs)
+		emit("f1_pack_objects", "Objects in packs in all repositories (garbage included).", "gauge", nil, objects)
+		emit("f1_pack_bytes", "Pack bytes in all repositories.", "gauge", nil, bytes)
+	})
 }
 
 // RunGC collects garbage in every repository every interval, one

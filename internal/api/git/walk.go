@@ -67,6 +67,7 @@ type fetchRequest struct {
 	deepenSince int64        // deepen-since <time>; 0: none
 	filter      *filter
 	includeTag  bool
+	ofsDelta    bool // the client accepts ofs-delta objects
 }
 
 func (r *fetchRequest) deepening() bool { return r.depth > 0 || r.deepenSince > 0 }
@@ -146,7 +147,7 @@ func walk(ctx context.Context, x *Exporter, req *fetchRequest, refTags []Object)
 		if req.filter != nil && req.filter.treeNone {
 			continue
 		}
-		if err := w.walkTree(ctx, co.Tree, co.GitTreeRaw); err != nil {
+		if err := w.walkTree(ctx, co.Tree, co.GitTreeRaw, ""); err != nil {
 			return nil, err
 		}
 	}
@@ -155,7 +156,7 @@ func walk(ctx context.Context, x *Exporter, req *fetchRequest, refTags []Object)
 			w.add(t) // raw tree bytes only
 			continue
 		}
-		if err := w.walkTree(ctx, t.F1, t.Raw); err != nil {
+		if err := w.walkTree(ctx, t.F1, t.Raw, ""); err != nil {
 			return nil, err
 		}
 	}
@@ -346,7 +347,7 @@ func (w *walker) walkCommits(ctx context.Context, wants []hash.Hash) ([]hash.Has
 
 // walkTree adds a tree and everything in it the client lacks, following the
 // filter.
-func (w *walker) walkTree(ctx context.Context, root hash.Hash, raw *hash.Hash) error {
+func (w *walker) walkTree(ctx context.Context, root hash.Hash, raw *hash.Hash, path string) error {
 	if w.uninterestingTrees[root] && raw == nil {
 		return nil
 	}
@@ -357,7 +358,7 @@ func (w *walker) walkTree(ctx context.Context, root hash.Hash, raw *hash.Hash) e
 	if w.seen[s] {
 		return nil
 	}
-	w.add(Object{Type: TypeTree, SHA: s, F1: root, Raw: raw})
+	w.add(Object{Type: TypeTree, SHA: s, F1: root, Raw: raw, Path: path})
 	entries, err := w.x.TreeEntries(ctx, root)
 	if err != nil {
 		return err
@@ -365,7 +366,7 @@ func (w *walker) walkTree(ctx context.Context, root hash.Hash, raw *hash.Hash) e
 	for _, e := range entries {
 		switch e.F1.Kind {
 		case object.KindDir:
-			if err := w.walkTree(ctx, e.F1.Target, gitRawOf(&e.F1)); err != nil {
+			if err := w.walkTree(ctx, e.F1.Target, gitRawOf(&e.F1), path+"/"+string(e.F1.Name)); err != nil {
 				return err
 			}
 		case object.KindGitlink:
@@ -388,7 +389,7 @@ func (w *walker) walkTree(ctx context.Context, root hash.Hash, raw *hash.Hash) e
 				}
 			}
 			e := e
-			w.add(Object{Type: TypeBlob, SHA: e.SHA, Blob: &e.F1})
+			w.add(Object{Type: TypeBlob, SHA: e.SHA, Blob: &e.F1, Path: path + "/" + string(e.F1.Name)})
 		}
 	}
 	return nil

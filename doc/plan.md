@@ -45,8 +45,8 @@ This document is the specification and work plan for implementing F1 in Go. It i
 
 ## Known limitations (version 1)
 
-- Storage efficiency for source code. The minimum chunk (16 KiB) is larger than most source files, and F1 stores no deltas. Every changed version of a small file is stored whole (zstd-compressed). A code repository with long history takes several times the space of a Git delta pack. The 1-byte object type tag leaves room to add a delta-encoded chunk type later; evaluate in phase 9 (ADR required).
-- Git fetch sends packs without deltas until phase 9, so clones of large code histories transfer more data than from a Git server.
+- Storage efficiency for source code. The minimum chunk (16 KiB) is larger than most source files, and F1 stores no deltas. Every changed version of a small file is stored whole (zstd-compressed). A code repository with long history takes 3–6 times the space of a Git delta pack (measured in ADR-0013). ADR-0013 proposes delta-encoded pack records, made during GC repacking, for a later version; it is a format addition awaiting a decision.
+- Git fetch deltifies trees and blobs of at most 1 MiB against the previous version of the same path (ADR-0012), but sends no thin packs against the client's objects, so incremental fetches can transfer more than from a Git server.
 - Write durability costs about six fsyncs per commit (pack, pack directory, `cache.db`, `refs.log`, `refs`, repository directory). Throughput targets assume NVMe or SSDs with power-loss protection; consumer SSDs with slow fsync will be lower.
 
 ## Fixed decisions
@@ -373,7 +373,7 @@ type Repo interface {
 
 ### Group commit for autocommit namespaces
 
-For `autocommit = true`, concurrent Puts to the same ref are batched: a committer goroutine per (namespace, ref) collects changes for up to 20 ms or 1000 changes, creates one commit, and completes all waiting Puts. Conditional Puts (`If-Match`, `If-None-Match`) are evaluated in order against the tree state inside the batch.
+For `autocommit = true`, concurrent Puts to the same ref are batched: a committer goroutine per (namespace, ref) collects the queued changes and those arriving less than 1 ms apart, for up to 20 ms or 1000 changes, creates one commit, and completes all waiting Puts (ADR-0012). Conditional Puts (`If-Match`, `If-None-Match`) are evaluated in order against the tree state inside the batch.
 
 Target: ≥ 500 small Puts per second per namespace on a single node with SSD.
 
@@ -518,7 +518,7 @@ Each ref update in a push goes through `UpdateRef`, which enforces write ACLs an
 
 ### Pack generation
 
-- Version 1 may send packs without deltas (valid, larger). Delta compression for trees and small text blobs is a later optimization (phase 9).
+- Trees and blobs of at most 1 MiB are sent as deltas against the previously sent version of the same path when that halves them (ofs-delta if negotiated, else ref-delta); larger blobs stream whole (ADR-0012).
 - Thin packs and `ofs-delta` decoding are required for push.
 
 ### Git LFS
@@ -646,10 +646,10 @@ Later: OIDC login in F1's own clients (authorization code with PKCE in a browser
 - Single binary `f1d` with subcommands: `serve`, `gc` (`--dry-run`, `--grace`, `--list`; through the admin socket, or offline with `--dir`), `fsck`, `user`, `token`, `s3key`, `acl`, `ns`, `repo` (`archive`, `freeze`, `unfreeze`, `import`, `attach`, `detach`, `export-acl`, `import-acl`, `rebuild-cache`), `backup`.
 - Admin commands that act on a running server talk to it over a Unix socket (`<data_dir>/admin.sock`, mode 0600; HTTP with JSON bodies, ADR-0004). The socket also prevents a second server on the same data directory. Commands that work offline (`fsck`, `rebuild-cache`, `archive` of a detached repository) open the directory directly and refuse if the server holds it.
 - `fsck <ns>`: verify pack checksums, that `cache.db` matches the packs, reachability from refs, and invariant D9. Works on a copied or extracted repository directory without a server (`f1d fsck --dir <path>`).
-- Metrics: Prometheus text format on `/metrics` (no client library dependency required; write the exposition format directly or use `prometheus/client_golang` if approved).
+- Metrics: Prometheus text format on `/metrics`, written directly (`internal/metrics`; metric list in doc/admin.md).
 - Structured logging with `log/slog`.
 - Graceful shutdown: stop accepting, finish requests, seal and flush packs.
-- Backup: `f1d backup <dir>` copies `server.db` (SQLite online backup API), then for each repository holds GC and copies `f1repo.toml`, `refs`, `refs.log`, `locks` and then `packs/` (incremental: only packs not yet in the target). `cache.db` is not backed up. Restore is `f1d repo import` per repository plus restoring `server.db`.
+- Backup: `f1d backup <dir>` copies `server.db` (SQLite `VACUUM INTO`), then for each repository holds GC, reads `f1repo.toml`, `refs`, `refs.log` and `locks`, copies the packs not yet in the target, and only then replaces the target's text files and drops packs no longer live (so an interrupted backup stays consistent). `cache.db` is not backed up. Restore: start f1d on a copy of the backup, which is a data directory, or `f1d repo import` per repository (ADR-0012).
 
 ## Repository layout
 
@@ -674,6 +674,7 @@ internal/policy/         namespace config, retention
 internal/gc/             garbage collection, fsck
 internal/auth/           principals, verifiers (local, JWT/JWKS), SigV4
 internal/api/native/     native HTTP API
+internal/metrics/        Prometheus counters, histograms and exposition
 internal/oidctest/       in-process OIDC provider for tests
 internal/gittest/        test-only importer of Git repositories (uses the production Git importer)
 internal/api/s3/         S3 API (SigV4 verification is in internal/auth)
@@ -684,6 +685,10 @@ internal/client/textmerge/  line diff, 3-way merge, unified diff (bounded memory
 pkg/f1client/            public Go SDK for the native API
 doc/adr/                 architecture decision records
 doc/format.md            on-disk format specification (written in phase 1)
+doc/admin.md             administration guide
+doc/benchmarks.md        benchmark results and regression procedure
+deploy/                  systemd unit, container image, deployment config
+scripts/benchcmp/        benchmark comparison (make bench-check)
 internal/testutil/       deterministic test data, golden files
 testdata/                golden vectors, Git fixture repositories
 ```

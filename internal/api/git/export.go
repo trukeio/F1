@@ -443,6 +443,7 @@ type Object struct {
 	F1   hash.Hash     // commit, tag or tree root
 	Raw  *hash.Hash    // GitRaw bytes of a tree
 	Blob *object.Entry // blob: a file entry, or an LFS entry (its pointer)
+	Path string        // tree or blob: its path in the commit (delta base selection)
 }
 
 // Content returns the content of a commit, tag or tree object.

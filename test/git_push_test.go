@@ -22,7 +22,7 @@ import (
 	"github.com/trukeio/f1/pkg/f1client"
 )
 
-func (e *env) gitNamespace(t *testing.T, name string) {
+func (e *env) gitNamespace(t testing.TB, name string) {
 	t.Helper()
 	if _, err := e.admin.CreateNamespace(ctx, f1client.CreateNamespaceRequest{Name: name, Preset: "git"}); err != nil {
 		t.Fatal(err)

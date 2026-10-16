@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -226,7 +227,19 @@ func TestSizeTransparencyNative(t *testing.T) {
 }
 
 // testSizes are the file sizes of the size transparency suite (D19).
+// F1_TEST_SIZES (comma-separated byte counts) replaces them, for
+// investigating one size.
 func testSizes() []int64 {
+	if v := os.Getenv("F1_TEST_SIZES"); v != "" {
+		var sizes []int64
+		for _, f := range strings.Split(v, ",") {
+			n, err := strconv.ParseInt(strings.TrimSpace(f), 10, 64)
+			if err == nil {
+				sizes = append(sizes, n)
+			}
+		}
+		return sizes
+	}
 	sizes := []int64{0, 1, 16<<10 - 1, 16 << 10, 256<<10 + 1, 64<<20 + 1}
 	if os.Getenv("F1_TEST_LARGE") != "" {
 		sizes = append(sizes, 1<<30, 10<<30)
@@ -235,14 +248,23 @@ func testSizes() []int64 {
 }
 
 // sampleHeap records the test process's peak heap until the test ends.
+// With F1_HEAP_PROFILE set to a file name, a heap profile is written there
+// at every new peak above 64 MiB.
 func sampleHeap(t *testing.T) *atomic.Uint64 {
 	var peak atomic.Uint64
 	done := make(chan struct{})
+	profile := os.Getenv("F1_HEAP_PROFILE")
 	go func() {
 		var ms runtime.MemStats
 		for {
 			runtime.ReadMemStats(&ms)
 			if ms.HeapInuse > peak.Load() {
+				if profile != "" && ms.HeapInuse > 64<<20 && ms.HeapInuse > peak.Load()*11/10 {
+					if f, err := os.Create(profile); err == nil {
+						pprof.WriteHeapProfile(f)
+						f.Close()
+					}
+				}
 				peak.Store(ms.HeapInuse)
 			}
 			select {
@@ -371,14 +393,30 @@ func TestSizeTransparencyGitPush(t *testing.T) {
 	checkMemory(t, s, sampleHeap(t))
 }
 
-// sizeLine returns line i (64 bytes) of the client size test's text, with
-// the tag of an edit if there is one.
-func sizeLine(i int64, edits map[int64]string) string {
+// sizeLine appends line i (64 bytes) of the client size test's text, with
+// the tag of an edit if there is one, without allocating: the generator
+// runs in the process whose heap the test measures.
+func sizeLine(b []byte, i int64, edits map[int64]string) []byte {
 	tag := "base"
 	if e, ok := edits[i]; ok {
 		tag = e
 	}
-	return fmt.Sprintf("%-6s %012d %s\n", tag, i, strings.Repeat("x", 43))
+	start := len(b)
+	b = append(b, tag...)
+	for len(b)-start < 7 {
+		b = append(b, ' ')
+	}
+	var num [12]byte
+	d := strconv.AppendInt(num[:0], i, 10)
+	for range 12 - len(d) {
+		b = append(b, '0')
+	}
+	b = append(b, d...)
+	b = append(b, ' ')
+	for range 43 {
+		b = append(b, 'x')
+	}
+	return append(b, '\n')
 }
 
 // lineGen generates the client size test's text.
@@ -390,7 +428,7 @@ type lineGen struct {
 
 func (g *lineGen) Read(p []byte) (int, error) {
 	for len(g.buf) < len(p) {
-		g.buf = append(g.buf, sizeLine(g.i, g.edits)...)
+		g.buf = sizeLine(g.buf, g.i, g.edits)
 		g.i++
 	}
 	n := copy(p, g.buf)

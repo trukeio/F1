@@ -17,6 +17,7 @@ import (
 	"github.com/trukeio/f1/internal/api/s3"
 	"github.com/trukeio/f1/internal/auth"
 	"github.com/trukeio/f1/internal/config"
+	"github.com/trukeio/f1/internal/metrics"
 	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/serverdb"
 )
@@ -104,7 +105,14 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(Ad
 		}
 	}
 	gitAPI := &git.Server{Repos: mgr, Auth: chain, ACL: acl, Log: log}
-	srv := newServer(newMux(nativeAPI.Handler(), gitAPI))
+	var metricsHandler http.Handler
+	if cfg.Server.Metrics.Enabled {
+		// The process-wide counters, and this server's repositories.
+		repoMetrics := metrics.NewRegistry()
+		mgr.CollectMetrics(repoMetrics, cfg.Server.Metrics.Namespaces)
+		metricsHandler = metrics.Handler(metrics.Default, repoMetrics)
+	}
+	srv := newServer(newMux(metrics.Instrument("native", nativeAPI.Handler()), metrics.Instrument("git", gitAPI), metricsHandler))
 	admin := newServer(adminHandler(mgr, cfg.Server.GC.GraceDuration(), log))
 	servers := []*http.Server{srv, admin}
 
@@ -131,7 +139,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(Ad
 		s3API := &s3.Server{Repos: mgr, DB: db, ACL: acl, GroupTTL: cfg.Auth.GroupTTL(), Log: log, Config: s3.Config{
 			Region: s3cfg.Region, Domain: s3cfg.Domain, CreateBucket: s3cfg.CreateBucket, UploadExpiry: s3cfg.Expiry(), Aliases: aliases,
 		}}
-		s3srv := newServer(s3API)
+		s3srv := newServer(metrics.Instrument("s3", s3API))
 		servers = append(servers, s3srv)
 		go func() { errc <- s3srv.Serve(s3ln) }()
 		go s3API.Run(bgCtx)
@@ -175,10 +183,13 @@ func addrString(a net.Addr) string {
 	return a.String()
 }
 
-func newMux(nativeAPI, gitAPI http.Handler) *http.ServeMux {
+func newMux(nativeAPI, gitAPI, metricsAPI http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", nativeAPI)
 	mux.Handle(git.Prefix, gitAPI)
+	if metricsAPI != nil {
+		mux.Handle("GET /metrics", metricsAPI)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))

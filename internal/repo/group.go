@@ -43,13 +43,18 @@ type committer struct {
 	reqs chan *pendingReq
 }
 
+// groupLinger is how long the committer waits for another request before
+// committing a batch.
+const groupLinger = time.Millisecond
+
 // maxConflictRetries bounds how often a batch is retried after another
 // writer moved the ref.
 const maxConflictRetries = 20
 
 // Submit queues a change for the ref's group committer and waits for the
-// commit that contains it. Concurrent submissions within the group window
-// (20 ms, at most 1000 changes) share one commit. Preconditions are
+// commit that contains it. Concurrent submissions share one commit: a batch
+// takes the queued requests and those arriving less than groupLinger
+// apart, for at most the group window (20 ms) and 1000 changes. Preconditions are
 // evaluated in submission order against the state inside the batch.
 func (r *Repo) Submit(ctx context.Context, req SubmitRequest) (hash.Hash, error) {
 	req.Ref = policy.FullRefName(req.Ref)
@@ -107,19 +112,28 @@ func (c *committer) run() {
 			c.failQueued()
 			return
 		}
-		timer := time.NewTimer(c.r.opts.GroupWindow)
+		// Take what is queued, and what arrives within a short linger
+		// (bounded by the window): requests that arrive while this batch
+		// commits form the next one, so a lone writer does not wait for
+		// the window and concurrent writers share commits.
+		deadline := time.NewTimer(c.r.opts.GroupWindow)
+		linger := time.NewTimer(groupLinger)
 	collect:
 		for len(batch) < c.r.opts.GroupMax {
 			select {
 			case p := <-c.reqs:
 				batch = append(batch, p)
-			case <-timer.C:
+				linger.Reset(groupLinger)
+			case <-linger.C:
+				break collect
+			case <-deadline.C:
 				break collect
 			case <-stop:
 				break collect
 			}
 		}
-		timer.Stop()
+		deadline.Stop()
+		linger.Stop()
 		c.process(batch)
 	}
 }
