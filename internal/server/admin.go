@@ -31,7 +31,7 @@ var ErrServerRunning = errors.New("server: another server is running on this dat
 // the data directory.
 func listenAdmin(path string) (net.Listener, error) {
 	if _, err := os.Stat(path); err == nil {
-		if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
+		if c, err := dialUnix(context.Background(), path, time.Second); err == nil {
 			c.Close()
 			return nil, fmt.Errorf("%w (%s)", ErrServerRunning, path)
 		}
@@ -39,17 +39,70 @@ func listenAdmin(path string) (net.Listener, error) {
 			return nil, fmt.Errorf("server: remove stale admin socket: %w", err)
 		}
 	}
-	old := syscall.Umask(0o077)
-	ln, err := net.Listen("unix", path)
-	syscall.Umask(old)
+	var ln net.Listener
+	err := shortSocketPath(path, func(p string) error {
+		old := syscall.Umask(0o077)
+		defer syscall.Umask(old)
+		var err error
+		ln, err = net.Listen("unix", p)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("server: admin socket: %w", err)
 	}
+	// The name it was bound with may be gone (a temporary symlink); the
+	// server removes the socket by its real path.
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	if err := os.Chmod(path, 0o600); err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("server: admin socket: %w", err)
 	}
 	return ln, nil
+}
+
+// maxSocketPath is the longest socket path used as is: a socket address
+// holds 104 bytes on macOS and the BSDs and 108 on Linux, including the
+// terminating NUL.
+const maxSocketPath = 103
+
+// shortSocketPath calls fn with a name for the socket at path that fits in
+// a socket address. A longer path is reached through a symlink to its
+// directory, in a new private temporary directory that is removed when fn
+// returns. The socket itself stays at path.
+func shortSocketPath(path string, fn func(string) error) error {
+	if len(path) <= maxSocketPath {
+		return fn(path)
+	}
+	dir, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "f1d-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	link := filepath.Join(tmp, "d")
+	if err := os.Symlink(dir, link); err != nil {
+		return err
+	}
+	short := filepath.Join(link, filepath.Base(path))
+	if len(short) > maxSocketPath {
+		return fmt.Errorf("socket path %s is too long, and so is the temporary directory %s (set TMPDIR)", path, tmp)
+	}
+	return fn(short)
+}
+
+// dialUnix connects to the socket at path, however long the path.
+func dialUnix(ctx context.Context, path string, timeout time.Duration) (net.Conn, error) {
+	var c net.Conn
+	err := shortSocketPath(path, func(p string) error {
+		d := net.Dialer{Timeout: timeout}
+		var err error
+		c, err = d.DialContext(ctx, "unix", p)
+		return err
+	})
+	return c, err
 }
 
 // adminHandler serves the admin API used by "f1d repo ..." on a running
@@ -184,15 +237,14 @@ type AdminClient struct {
 // It returns ok == false if no server is running there.
 func DialAdmin(dataDir string) (*AdminClient, bool) {
 	path := filepath.Join(dataDir, AdminSocket)
-	c, err := net.DialTimeout("unix", path, time.Second)
+	c, err := dialUnix(context.Background(), path, time.Second)
 	if err != nil {
 		return nil, false
 	}
 	c.Close()
 	return &AdminClient{http: &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", path)
+			return dialUnix(ctx, path, 0)
 		},
 	}}}, true
 }

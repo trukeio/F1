@@ -53,7 +53,7 @@ Phase 2b implements freezing, archiving, importing, attaching and detaching repo
 
 ### Admin socket
 
-8. **The admin socket** is HTTP with JSON bodies on `<data_dir>/admin.sock`, mode 0600. It is authenticated by file permissions only.
+8. **The admin socket** is HTTP with JSON bodies on `<data_dir>/admin.sock`, mode 0600. It is authenticated by file permissions only. A socket address holds about 104 bytes, so when the path is longer, the server and the admin commands bind and connect through a symlink to the data directory in a new private temporary directory, removed right after. The socket itself stays in the data directory.
    - Endpoints:
      - `GET /repos`
      - `POST /repos/{ns}/freeze|unfreeze|attach|detach`
