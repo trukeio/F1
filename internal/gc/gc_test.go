@@ -384,6 +384,33 @@ func TestGCDryRun(t *testing.T) {
 	}
 }
 
+// A commit based on a parent that the collection removed (the head moved
+// on, retention = none) is a conflict, as the compare-and-swap would report,
+// not a missing object.
+func TestGCStaleParentConflict(t *testing.T) {
+	tr := newRepo(t, "none")
+	old := tr.mustPut(map[string][]byte{"k": data("old", 100<<10)})
+	tr.r.Store().Flush(ctx) // the old version in a pack of its own
+	tr.mustPut(map[string][]byte{"k": data("new", 100<<10)})
+	tr.r.Store().Flush(ctx)
+	if res := tr.gc(noGrace); res.DeletedObjects == 0 {
+		t.Fatalf("nothing collected: %+v", res)
+	}
+	if _, err := tr.r.ReadCommit(ctx, old); err == nil {
+		t.Fatal("the old head is still stored")
+	}
+	res, err := tr.r.Ingest(ctx, bytes.NewReader([]byte("x")), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tr.r.Commit(ctx, repo.CommitRequest{Ref: "main", Parent: &old, Author: repo.Person{Name: "t", Email: "t"},
+		Changes: []repo.Change{{Op: repo.OpPut, Path: "c", Entry: object.Entry{Kind: object.KindFile, Target: res.File}}}})
+	var ce *repo.ConflictError
+	if !errors.As(err, &ce) || ce.Current != tr.r.Ref("main") {
+		t.Fatalf("commit on a collected parent: %v, want a conflict", err)
+	}
+}
+
 // GC under concurrent write load, with writes that reuse old chunks,
 // loses no acknowledged data.
 func TestGCConcurrentWrites(t *testing.T) {

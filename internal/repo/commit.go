@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/trukeio/f1/internal/hash"
 	"github.com/trukeio/f1/internal/object"
 	"github.com/trukeio/f1/internal/policy"
+	"github.com/trukeio/f1/internal/store"
 	"github.com/trukeio/f1/internal/tree"
 )
 
@@ -74,11 +76,11 @@ func (r *Repo) Commit(ctx context.Context, req CommitRequest) (hash.Hash, error)
 	}
 	base, err := r.commitTree(ctx, parent)
 	if err != nil {
-		return hash.Zero, err
+		return hash.Zero, r.staleParent(ref, parent, err)
 	}
 	root, err := r.applyChanges(ctx, base, req.Changes)
 	if err != nil {
-		return hash.Zero, err
+		return hash.Zero, r.staleParent(ref, parent, err)
 	}
 	c := &object.Commit{Tree: root, Message: []byte(req.Message)}
 	if !parent.IsZero() {
@@ -96,13 +98,27 @@ func (r *Repo) Commit(ctx context.Context, req CommitRequest) (hash.Hash, error)
 	c.Committer = gitPerson(committer, t)
 	h, err := r.putObject(ctx, c)
 	if err != nil {
-		return hash.Zero, err
+		return hash.Zero, r.staleParent(ref, parent, err)
 	}
 	opts := UpdateOptions{Principal: req.Principal, Reason: "commit", CheckPath: req.CheckPath, skipLocks: req.skipLocks}
 	if err := r.updateRefs(ctx, []RefUpdate{{Ref: ref, Old: parent, New: h}}, opts); err != nil {
 		return hash.Zero, err
 	}
 	return h, nil
+}
+
+// staleParent turns an error from building on parent into a conflict when
+// the ref has moved away from parent: garbage collection may have removed
+// the objects of a commit that is no longer the head (retention other than
+// "all", ADR-0011), and the compare-and-swap would refuse the commit anyway.
+func (r *Repo) staleParent(ref string, parent hash.Hash, err error) error {
+	if !errors.Is(err, ErrNotFound) && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrMissingReference) {
+		return err
+	}
+	if cur := r.Ref(ref); cur != parent {
+		return &ConflictError{Ref: ref, Expected: parent, Current: cur}
+	}
+	return err
 }
 
 // gitPerson converts to the commit form. Native and S3 commits use UTC

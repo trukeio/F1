@@ -90,6 +90,7 @@ Phase 8 implements retention policies and garbage collection (doc/plan.md, "Rete
   - With `retention = none`, 1,000,000 overwrites of 1,000 keys leave 486 KiB of packs for 309 KiB of live data. The collection deletes 3 million objects in about a minute.
   - Dry runs equal the real deletions.
 - Existence checks take a shared lock; only `BeginGC` and `Condemn` take it exclusively, briefly.
+- A commit based on a parent the collection has removed (the ref moved on, and retention other than `all` let the old head go) is a conflict, as the compare-and-swap would report: the client reads the new head and retries. It is not reported as a missing object.
 - Retention `days:N` depends on commit times, which clients can set (Git). A commit dated in the future stays until that date plus N days.
 
 ## Alternatives considered
