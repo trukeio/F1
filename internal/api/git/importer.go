@@ -230,8 +230,15 @@ func (im *Importer) Commit(ctx context.Context, s SHA, data []byte) error {
 		}
 		c.Parents = append(c.Parents, po.F1)
 	}
+	if dedup := uniqueHashes(c.Parents); len(dedup) != len(c.Parents) {
+		// Git allows a parent to be listed twice; F1 commits do not
+		// (doc/format.md). The F1 commit lists each parent once, and the
+		// exact Git bytes are kept.
+		c.Parents = dedup
+		c.GitRawHint = data
+	}
 	if err := c.Validate(); err != nil {
-		// Unusual commits (duplicate parents) are kept as raw bytes.
+		// Other unusual commits are kept as raw bytes.
 		c.GitRawHint = data
 	}
 	if c.GitRawHint == nil {
@@ -287,4 +294,17 @@ func (im *Importer) Tag(ctx context.Context, s SHA, data []byte) error {
 	}
 	im.objs[s] = Imported{Type: TypeTag, F1: h}
 	return nil
+}
+
+// uniqueHashes returns hs without repeats, in first-occurrence order.
+func uniqueHashes(hs []hash.Hash) []hash.Hash {
+	seen := map[hash.Hash]bool{}
+	var out []hash.Hash
+	for _, h := range hs {
+		if !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	return out
 }

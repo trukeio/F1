@@ -69,7 +69,7 @@ Phase 6 serves Git push (receive-pack) and the Git LFS batch and locking APIs (d
 
 ## Consequences
 
-Every fixture pushes into an empty namespace and clones back with identical ids. Non-canonical trees round-trip, and trees with duplicate names are refused. The LFS workflow works against F1: push with automatic upload, `git lfs pull`, lock, unlock and `git lfs locks`. LFS files read as real content through the native API and S3, and S3 overwrites are seen by Git LFS. Concurrent pushes and S3 writes lose no update.
+Every fixture pushes into an empty namespace and clones back with identical ids. A commit that lists a parent twice (Git allows it; golang/go has such commits) is stored with the parent once and its exact bytes in `git_raw_hint` (doc/format.md, "Commit"); before this was fixed, such a push failed. Non-canonical trees round-trip, and trees with duplicate names are refused. The LFS workflow works against F1: push with automatic upload, `git lfs pull`, lock, unlock and `git lfs locks`. LFS files read as real content through the native API and S3, and S3 overwrites are seen by Git LFS. Concurrent pushes and S3 writes lose no update.
 
 ## Alternatives considered
 

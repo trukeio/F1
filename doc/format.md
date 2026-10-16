@@ -187,6 +187,8 @@ Commit = {
 
 `tree` and parents are non-zero hashes; extra header keys are non-empty.
 
+Exporting a commit with `git_raw_hint` uses the raw bytes only if they name the same tree and parents. Git allows a commit to list a parent more than once, which F1 parents do not: a commit imported from Git lists each parent once, in first-occurrence order, and keeps the exact bytes in `git_raw_hint`. The raw parents are therefore compared after removing repeats.
+
 ### 4.5 Tag (0x06)
 
 ```

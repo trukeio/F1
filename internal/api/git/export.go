@@ -125,16 +125,24 @@ func (x *Exporter) commitBytes(ctx context.Context, c *object.Commit, parents []
 		return EncodeCommit(c, tree, parents), nil
 	}
 	// The raw bytes are used only if they reference the same tree and
-	// parents.
+	// parents. A parent Git lists twice is listed once in F1.
 	pc, err := ParseCommit(c.GitRawHint)
 	if err != nil {
 		return nil, fmt.Errorf("git_raw_hint: %w", err)
 	}
-	if pc.Tree != tree || len(pc.Parents) != len(parents) {
+	var rawParents []SHA
+	seen := map[SHA]bool{}
+	for _, p := range pc.Parents {
+		if !seen[p] {
+			seen[p] = true
+			rawParents = append(rawParents, p)
+		}
+	}
+	if pc.Tree != tree || len(rawParents) != len(parents) {
 		return nil, errors.New("git_raw_hint does not match the commit's tree or parents")
 	}
 	for i := range parents {
-		if pc.Parents[i] != parents[i] {
+		if rawParents[i] != parents[i] {
 			return nil, errors.New("git_raw_hint does not match the commit's parents")
 		}
 	}

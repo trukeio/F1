@@ -386,3 +386,49 @@ func TestGitLFS(t *testing.T) {
 		t.Fatalf("lock remains after unlock: %s", out)
 	}
 }
+
+// TestGitPushRepeatedParent pushes a commit that lists its parent twice,
+// as some commits of golang/go do. Git accepts it; F1 stores the parent
+// once and keeps the exact Git bytes, so the SHA round-trips.
+func TestGitPushRepeatedParent(t *testing.T) {
+	requireGit(t)
+	src := filepath.Join(t.TempDir(), "src")
+	gitCmd(t, "", nil, "init", "-q", "-b", "main", src)
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a\n"), 0o644)
+	gitCmd(t, src, nil, "add", "a.txt")
+	gitCmd(t, src, nil, "commit", "-q", "-m", "first")
+	head := strings.TrimSpace(gitCmd(t, src, nil, "rev-parse", "HEAD"))
+	tree := strings.TrimSpace(gitCmd(t, src, nil, "rev-parse", "HEAD^{tree}"))
+	// git commit-tree drops a repeated parent, so the object is written
+	// directly.
+	raw := fmt.Sprintf("tree %s\nparent %s\nparent %s\nauthor A <a@example.com> 1700000000 +0000\ncommitter A <a@example.com> 1700000000 +0000\n\nrepeated parent\n", tree, head, head)
+	f := filepath.Join(t.TempDir(), "commit")
+	os.WriteFile(f, []byte(raw), 0o644)
+	odd := strings.TrimSpace(gitCmd(t, src, nil, "hash-object", "-t", "commit", "-w", f))
+	gitCmd(t, src, nil, "update-ref", "refs/heads/main", odd)
+	os.WriteFile(filepath.Join(src, "b.txt"), []byte("b\n"), 0o644)
+	gitCmd(t, src, nil, "add", "b.txt")
+	gitCmd(t, src, nil, "commit", "-q", "-m", "after")
+
+	e := start(t, envOpts{})
+	e.gitNamespace(t, "odd")
+	gitCmd(t, src, nil, "push", "-q", e.gitURL("admin", "odd"), "main")
+	dst := filepath.Join(t.TempDir(), "clone")
+	gitCmd(t, "", nil, "clone", "-q", "--mirror", e.gitURL("admin", "odd"), dst)
+	if got, want := gitRefs(t, dst, "refs/heads"), gitRefs(t, src, "refs/heads"); got != want {
+		t.Fatalf("refs differ:\n%s\nwant:\n%s", got, want)
+	}
+	if got := gitCmd(t, dst, nil, "cat-file", "-p", odd); strings.Count(got, "parent "+head) != 2 {
+		t.Fatalf("exported commit:\n%s", got)
+	}
+	// The F1 history lists the parent once.
+	log, err := e.admin.Log(ctx, "odd", "main", "", 0)
+	if err != nil || len(log) != 3 {
+		t.Fatalf("log = %d commits, %v", len(log), err)
+	}
+	for _, c := range log {
+		if len(c.Parents) > 1 {
+			t.Fatalf("commit %s has %d parents in F1", c.Hash, len(c.Parents))
+		}
+	}
+}
