@@ -88,7 +88,7 @@ What it measures:
 - **cold:** each file read once from a server that was just restarted, so its read cache is empty.
 - **Serial** is one client, waiting for each response. **Parallel** is 24 concurrent clients.
 
-The results are medians of five runs on the reference machine. Client and servers share its 6 cores over loopback.
+The results are medians of five runs on the reference machine, at commit 34df60d (before the prepared statements below). Client and servers share its 6 cores over loopback.
 
 | Size | Source | Serial latency | Parallel rate | Parallel throughput |
 |---|---|---|---|---|
@@ -112,10 +112,30 @@ F1 takes 3.6–4.6 times as long per file as the file server. With 24 clients it
 - **A fixed cost per request.** A 304, which reads no content, costs about 200 µs more in F1 than in the file server.
   - About 40 % of F1's CPU time per request goes to four SQLite queries: token, principal, local groups and namespace ACL.
   - Most of that time is spent parsing the SQL text again for every query.
-  - Caching verified tokens and ACLs in memory, or keeping the statements prepared, would remove most of this cost.
+  - The hot queries are now prepared statements (see below), which removes the parsing. Caching verified tokens and ACLs in memory would remove the queries too, but a cache must notice the changes that `f1d user`, `f1d token` and `f1d acl` write to `server.db` from another process.
 - **A cost per byte.** Above the fixed cost, F1 streams about 1.1 GB/s per request: it reads and decompresses records. The file server streams about 4 GB/s.
 - **Reads by name and by commit cost the same.** A read by commit hash saves the revalidation request entirely, because the client can keep its copy for a year.
 - **Cold reads** add about 100–150 µs per file.
+
+### Prepared statements
+
+The per-request queries of `server.db` (token, principal, groups, S3 key, ACL) are now prepared once per connection instead of parsed on every request. Results stay exact: a revoked token or a changed ACL takes effect on the next request.
+
+F1, median of five runs before and after:
+
+| Read | Before | After | Change |
+|---|---|---|---|
+| 10 kB, serial | 312 µs | 253 µs | −19 % |
+| 10 kB, 24 clients | 18,400 /s | 23,000 /s | +25 % |
+| 10 kB, cold | 457 µs | 305 µs | −33 % |
+| 100 kB, serial | 447 µs | 373 µs | −17 % |
+| 100 kB, 24 clients | 10,200 /s | 10,600 /s | +4 % |
+| 500 kB, serial | 739 µs | 709 µs | −4 % |
+| 500 kB, 24 clients | 3,290 /s | 3,260 /s | −1 % |
+| 304, serial | 267–290 µs | 174–179 µs | −33 to −40 % |
+| 304, 24 clients | 23,800 /s | 33,500–34,600 /s | +39 to +45 % |
+
+The gain is in the fixed cost, so it shows on small files and revalidations, not on 500 kB files. The machine was slower during the second series: the unchanged file server lost 4–18 %, so the gains above are, if anything, understated. In that series the file server took 89 µs for a 10 kB file and 68–72 µs for a 304.
 
 What serving a site from F1 needs, beyond speed:
 

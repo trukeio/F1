@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver "sqlite"
@@ -64,7 +65,8 @@ var migrations = []string{
 
 // DB is an open server.db.
 type DB struct {
-	db *sql.DB
+	db    *sql.DB
+	stmts sync.Map // query text → *sql.Stmt
 }
 
 // Open opens or creates server.db at path and applies pending migrations.
@@ -90,7 +92,56 @@ func Open(ctx context.Context, path string) (*DB, error) {
 }
 
 // Close closes the database.
-func (d *DB) Close() error { return d.db.Close() }
+func (d *DB) Close() error {
+	d.stmts.Range(func(_, s any) bool {
+		s.(*sql.Stmt).Close()
+		return true
+	})
+	return d.db.Close()
+}
+
+// stmt returns a prepared statement for q, preparing it on first use.
+// Queries that run on every request (authentication and ACLs) go through
+// it: parsing their SQL every time was about a fifth of the CPU time of a
+// small GET (doc/benchmarks.md, "Web site files").
+func (d *DB) stmt(ctx context.Context, q string) (*sql.Stmt, error) {
+	if s, ok := d.stmts.Load(q); ok {
+		return s.(*sql.Stmt), nil
+	}
+	s, err := d.db.PrepareContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if prev, loaded := d.stmts.LoadOrStore(q, s); loaded {
+		s.Close()
+		return prev.(*sql.Stmt), nil
+	}
+	return s, nil
+}
+
+// query runs q as a prepared statement.
+func (d *DB) query(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	s, err := d.stmt(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return s.QueryContext(ctx, args...)
+}
+
+// queryRow runs q, which returns at most one row, as a prepared statement.
+func (d *DB) queryRow(ctx context.Context, q string, args ...any) scanner {
+	s, err := d.stmt(ctx, q)
+	if err != nil {
+		return errRow{err}
+	}
+	return s.QueryRowContext(ctx, args...)
+}
+
+type scanner interface{ Scan(dest ...any) error }
+
+type errRow struct{ err error }
+
+func (r errRow) Scan(...any) error { return r.err }
 
 // BackupTo writes a consistent copy of the database to path (VACUUM INTO,
 // while the server runs), through a temporary file renamed into place.

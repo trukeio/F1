@@ -152,7 +152,7 @@ func (d *DB) LookupPrincipal(ctx context.Context, name string) (Principal, error
 	p := Principal{Name: name}
 	var dis int
 	var created int64
-	err := d.db.QueryRowContext(ctx, `SELECT issuer, disabled, created_at FROM principals WHERE name = ?`, name).Scan(&p.Issuer, &dis, &created)
+	err := d.queryRow(ctx, `SELECT issuer, disabled, created_at FROM principals WHERE name = ?`, name).Scan(&p.Issuer, &dis, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, fmt.Errorf("%w: %s", ErrNoPrincipal, name)
 	}
@@ -162,7 +162,7 @@ func (d *DB) LookupPrincipal(ctx context.Context, name string) (Principal, error
 
 // LocalGroups returns a local user's groups.
 func (d *DB) LocalGroups(ctx context.Context, name string) ([]string, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT group_name FROM memberships WHERE principal = ? ORDER BY group_name`, name)
+	rows, err := d.query(ctx, `SELECT group_name FROM memberships WHERE principal = ? ORDER BY group_name`, name)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +214,7 @@ func (d *DB) SeenExternal(ctx context.Context, name, issuer string, groups []str
 func (d *DB) LastGroups(ctx context.Context, name string, maxAge time.Duration) ([]string, error) {
 	var g string
 	var seen int64
-	err := d.db.QueryRowContext(ctx, `SELECT groups, groups_seen_at FROM principals WHERE name = ?`, name).Scan(&g, &seen)
+	err := d.queryRow(ctx, `SELECT groups, groups_seen_at FROM principals WHERE name = ?`, name).Scan(&g, &seen)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +262,7 @@ func (d *DB) VerifyToken(ctx context.Context, secret string) (Principal, error) 
 	sum := sha256.Sum256([]byte(secret))
 	var name string
 	var exp, revoked int64
-	err := d.db.QueryRowContext(ctx, `SELECT principal, expires_at, revoked_at FROM tokens WHERE hash = ?`, sum[:]).Scan(&name, &exp, &revoked)
+	err := d.queryRow(ctx, `SELECT principal, expires_at, revoked_at FROM tokens WHERE hash = ?`, sum[:]).Scan(&name, &exp, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Principal{}, ErrBadToken
 	}
@@ -354,7 +354,7 @@ func (d *DB) S3Keys(ctx context.Context, principal string) ([]S3Key, error) {
 func (d *DB) LookupS3Key(ctx context.Context, accessKey string) (S3Key, error) {
 	k := S3Key{AccessKey: accessKey}
 	var created int64
-	err := d.db.QueryRowContext(ctx, `SELECT secret, principal, created_at FROM s3keys WHERE access_key = ? AND revoked_at = 0`, accessKey).
+	err := d.queryRow(ctx, `SELECT secret, principal, created_at FROM s3keys WHERE access_key = ? AND revoked_at = 0`, accessKey).
 		Scan(&k.Secret, &k.Principal, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return k, ErrBadToken
@@ -476,7 +476,7 @@ func (d *DB) ACLNamespaces(ctx context.Context, principals []string) (map[string
 }
 
 func (d *DB) acl(ctx context.Context, q string, args ...any) ([]ACLEntry, error) {
-	rows, err := d.db.QueryContext(ctx, q, args...)
+	rows, err := d.query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
