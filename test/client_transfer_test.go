@@ -180,8 +180,8 @@ func TestClientPushRetry(t *testing.T) {
 	}
 	commit("a.bin")
 	p.lieMissing.Store(1)
-	if n, err := wc.Push(ctx); err != nil || n != 1 || p.lied.Load() != 1 {
-		t.Fatalf("push = %d, %v (lied %d times)", n, err, p.lied.Load())
+	if r, err := wc.Push(ctx, true); err != nil || r.Pushed != 1 || p.lied.Load() != 1 {
+		t.Fatalf("push = %+v, %v (lied %d times)", r, err, p.lied.Load())
 	}
 	if get(t, e.admin, "r", "main", "a.bin") != string(data) {
 		t.Fatal("pushed content differs")
@@ -190,12 +190,12 @@ func TestClientPushRetry(t *testing.T) {
 	data = testutil.Bytes("retry 2", 3<<20)
 	commit("b.bin")
 	p.lieMissing.Store(10)
-	if _, err := wc.Push(ctx); f1client.Code(err) != f1client.CodeMissingObjects {
+	if _, err := wc.Push(ctx, true); f1client.Code(err) != f1client.CodeMissingObjects {
 		t.Fatalf("push with objects always missing: %v", err)
 	}
 	p.lieMissing.Store(0)
-	if n, err := wc.Push(ctx); err != nil || n != 1 {
-		t.Fatalf("push = %d, %v", n, err)
+	if r, err := wc.Push(ctx, true); err != nil || r.Pushed != 1 {
+		t.Fatalf("push = %+v, %v", r, err)
 	}
 	if get(t, e.admin, "r", "main", "b.bin") != string(data) {
 		t.Fatal("pushed content differs")

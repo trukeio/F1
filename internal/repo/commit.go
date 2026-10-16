@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -53,6 +54,10 @@ type CommitRequest struct {
 	Principal string    // recorded in refs.log; the committer for lock checks
 	// CheckPath is called for every changed file (see UpdateOptions).
 	CheckPath func(ref string, c PathChange) error
+	// Rebase applies the changes on the current value of Ref if it has
+	// moved from Parent but no path the changes name has changed
+	// (ADR-0014). It needs a non-zero Parent.
+	Rebase bool
 
 	skipLocks bool
 }
@@ -61,30 +66,61 @@ type CommitRequest struct {
 // and updates the ref with compare-and-swap. A conflict returns a
 // *ConflictError (errors.Is ErrConflict).
 func (r *Repo) Commit(ctx context.Context, req CommitRequest) (hash.Hash, error) {
+	h, _, err := r.CommitOn(ctx, req)
+	return h, err
+}
+
+// rebaseAttempts bounds the retries of a rebased commit that keeps losing
+// the compare-and-swap to other writers.
+const rebaseAttempts = 8
+
+// CommitOn is Commit that also returns the commit the new one was built on:
+// the requested parent, or with Rebase the ref's value it was rebased on.
+func (r *Repo) CommitOn(ctx context.Context, req CommitRequest) (hash.Hash, hash.Hash, error) {
 	end, err := r.beginWrite()
 	if err != nil {
-		return hash.Zero, err
+		return hash.Zero, hash.Zero, err
 	}
 	defer end()
 	ref := policy.FullRefName(req.Ref)
 	if err := policy.ValidRefName(ref); err != nil {
-		return hash.Zero, err
+		return hash.Zero, hash.Zero, err
 	}
 	parent := r.Ref(ref)
 	if req.Parent != nil {
 		parent = *req.Parent
 	}
-	base, err := r.commitTree(ctx, parent)
-	if err != nil {
-		return hash.Zero, r.staleParent(ref, parent, err)
+	rebase := req.Rebase && !parent.IsZero()
+	for attempt := 1; ; attempt++ {
+		base := parent
+		if rebase {
+			if base, err = r.rebaseBase(ctx, ref, parent, req.Changes); err != nil {
+				return hash.Zero, hash.Zero, err
+			}
+		}
+		h, err := r.commitOn(ctx, ref, parent, base, req)
+		var ce *ConflictError
+		if rebase && errors.As(err, &ce) && ce.Expected == base && attempt < rebaseAttempts {
+			continue // another write landed after the check
+		}
+		return h, base, err
 	}
-	root, err := r.applyChanges(ctx, base, req.Changes)
+}
+
+// commitOn builds the commit on base and moves ref from base to it.
+// parent is the commit the caller expected, for conflict reporting.
+func (r *Repo) commitOn(ctx context.Context, ref string, parent, base hash.Hash, req CommitRequest) (hash.Hash, error) {
+	root, err := r.commitTree(ctx, base)
 	if err != nil {
-		return hash.Zero, r.staleParent(ref, parent, err)
+		return hash.Zero, r.staleParent(ref, base, err)
+	}
+	root, err = r.applyChanges(ctx, root, req.Changes)
+	if err != nil {
+		return hash.Zero, r.staleParent(ref, base, err)
 	}
 	c := &object.Commit{Tree: root, Message: []byte(req.Message)}
-	if !parent.IsZero() {
-		c.Parents = []hash.Hash{parent}
+	if !base.IsZero() {
+		c.Parents = []hash.Hash{base}
 	}
 	t := req.Time
 	if t.IsZero() {
@@ -98,13 +134,135 @@ func (r *Repo) Commit(ctx context.Context, req CommitRequest) (hash.Hash, error)
 	c.Committer = gitPerson(committer, t)
 	h, err := r.putObject(ctx, c)
 	if err != nil {
-		return hash.Zero, r.staleParent(ref, parent, err)
+		return hash.Zero, r.staleParent(ref, base, err)
 	}
-	opts := UpdateOptions{Principal: req.Principal, Reason: "commit", CheckPath: req.CheckPath, skipLocks: req.skipLocks}
-	if err := r.updateRefs(ctx, []RefUpdate{{Ref: ref, Old: parent, New: h}}, opts); err != nil {
+	reason := "commit"
+	if base != parent {
+		reason = "commit (rebased)"
+	}
+	opts := UpdateOptions{Principal: req.Principal, Reason: reason, CheckPath: req.CheckPath, skipLocks: req.skipLocks}
+	if err := r.updateRefs(ctx, []RefUpdate{{Ref: ref, Old: base, New: h}}, opts); err != nil {
 		return hash.Zero, err
 	}
 	return h, nil
+}
+
+// rebaseBase returns the commit a rebased write is built on: the ref's
+// current value, if every path the changes name (and each of its parent
+// directories) is the same there as in parent. Otherwise it returns a
+// *ConflictError listing the changed paths (ADR-0014).
+func (r *Repo) rebaseBase(ctx context.Context, ref string, parent hash.Hash, changes []Change) (hash.Hash, error) {
+	head := r.Ref(ref)
+	if head == parent || head.IsZero() {
+		return parent, nil
+	}
+	from, err := r.commitTree(ctx, parent)
+	if err != nil {
+		return hash.Zero, r.staleParent(ref, parent, err)
+	}
+	to, err := r.commitTree(ctx, head)
+	if err != nil {
+		return hash.Zero, err
+	}
+	var paths []string
+	for _, c := range changes {
+		paths = append(paths, c.Path)
+		if c.Op == OpRename {
+			paths = append(paths, c.From)
+		}
+	}
+	var changed []string
+	seen := map[string]bool{}
+	for _, p := range paths {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		same, err := r.samePath(ctx, from, to, p)
+		if err != nil {
+			return hash.Zero, err
+		}
+		if !same {
+			changed = append(changed, p)
+		}
+	}
+	if len(changed) > 0 {
+		sort.Strings(changed)
+		return hash.Zero, &ConflictError{Ref: ref, Expected: parent, Current: head, Paths: changed}
+	}
+	return head, nil
+}
+
+// samePath reports whether path has the same entry (kind, target and
+// attrs, or absence) in trees a and b, and whether each of its parent
+// directories is a directory in b or has the same kind as in a: a
+// directory deleted or replaced by a file is a change.
+func (r *Repo) samePath(ctx context.Context, a, b hash.Hash, path string) (bool, error) {
+	if err := r.CheckPath(path); err != nil {
+		return false, err
+	}
+	if r.meta.Layout != policy.LayoutFlat {
+		for i := strings.IndexByte(path, '/'); i >= 0; {
+			ea, err := r.entryAt(ctx, a, path[:i])
+			if err != nil {
+				return false, err
+			}
+			eb, err := r.entryAt(ctx, b, path[:i])
+			if err != nil {
+				return false, err
+			}
+			// A directory that appeared is no change: both writes may add
+			// files to it.
+			if (eb == nil || eb.Kind != object.KindDir) && ((ea == nil) != (eb == nil) || ea != nil && ea.Kind != eb.Kind) {
+				return false, nil
+			}
+			j := strings.IndexByte(path[i+1:], '/')
+			if j < 0 {
+				break
+			}
+			i += 1 + j
+		}
+	}
+	ea, err := r.entryAt(ctx, a, path)
+	if err != nil {
+		return false, err
+	}
+	eb, err := r.entryAt(ctx, b, path)
+	if err != nil {
+		return false, err
+	}
+	if ea == nil || eb == nil {
+		return ea == nil && eb == nil, nil
+	}
+	return ea.Kind == eb.Kind && ea.Target == eb.Target && attrsEqual(ea.Attrs, eb.Attrs), nil
+}
+
+func attrsEqual(a, b *object.Attrs) bool {
+	if a == nil {
+		a = &object.Attrs{}
+	}
+	if b == nil {
+		b = &object.Attrs{}
+	}
+	return reflect.DeepEqual(normAttrs(*a), normAttrs(*b))
+}
+
+// normAttrs makes empty maps and slices nil, so that decoding differences
+// do not count as changes.
+func normAttrs(a object.Attrs) object.Attrs {
+	if len(a.Meta) == 0 {
+		a.Meta = nil
+	}
+	if len(a.Checksums) == 0 {
+		a.Checksums = nil
+	}
+	if len(a.GitSHA1) == 0 {
+		a.GitSHA1 = nil
+	}
+	if len(a.LFSPointer) == 0 {
+		a.LFSPointer = nil
+	}
+	return a
 }
 
 // staleParent turns an error from building on parent into a conflict when

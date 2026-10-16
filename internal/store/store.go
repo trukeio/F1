@@ -307,6 +307,22 @@ func (s *Store) HasGuarded(ctx context.Context, h hash.Hash) (bool, error) {
 }
 
 func (s *Store) hasLocked(ctx context.Context, h hash.Hash) (bool, error) {
+	ok, err := s.Exists(ctx, h)
+	if err != nil || !ok {
+		return false, err
+	}
+	if s.gc.touched != nil {
+		s.touchMu.Lock()
+		s.gc.touched[h] = struct{}{}
+		s.touchMu.Unlock()
+	}
+	return true, nil
+}
+
+// Exists reports whether h is stored, like Has, but for readers only: it
+// does not take the GC lock and does not count as a reference to h during
+// a collection. A history walk uses it to find where history ends.
+func (s *Store) Exists(ctx context.Context, h hash.Hash) (bool, error) {
 	s.mu.Lock()
 	inOpen := false
 	if s.open != nil {
@@ -327,11 +343,6 @@ func (s *Store) hasLocked(ctx context.Context, h hash.Hash) (bool, error) {
 		if s.condemnedNow(h) {
 			return false, nil
 		}
-	}
-	if s.gc.touched != nil {
-		s.touchMu.Lock()
-		s.gc.touched[h] = struct{}{}
-		s.touchMu.Unlock()
 	}
 	return true, nil
 }

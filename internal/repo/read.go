@@ -339,6 +339,9 @@ type CommitInfo struct {
 // to every parent are returned. Missing parents (truncated history) end the
 // walk on that branch.
 func (r *Repo) Log(ctx context.Context, start hash.Hash, path string, limit int) ([]CommitInfo, error) {
+	if path != "" {
+		return r.logPath(ctx, start, path, limit)
+	}
 	var out []CommitInfo
 	q := &commitQueue{}
 	seen := map[hash.Hash]bool{start: true}
@@ -511,54 +514,8 @@ func named(e *object.Entry, path string) *object.Entry {
 }
 
 // MergeBase returns a best common ancestor of commits a and b, or the zero
-// hash if they have none.
+// hash if they have none. It walks the commit graph by generation
+// (ADR-0015).
 func (r *Repo) MergeBase(ctx context.Context, a, b hash.Hash) (hash.Hash, error) {
-	ancestors := map[hash.Hash]bool{}
-	stack := []hash.Hash{a}
-	for len(stack) > 0 {
-		h := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if ancestors[h] {
-			continue
-		}
-		c, err := r.ReadCommit(ctx, h)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return hash.Zero, err
-		}
-		ancestors[h] = true
-		stack = append(stack, c.Parents...)
-	}
-	// Walk b's history newest first; the first commit that is an ancestor of
-	// a is a best common ancestor.
-	q := &commitQueue{}
-	seen := map[hash.Hash]bool{b: true}
-	cb, err := r.ReadCommit(ctx, b)
-	if err != nil {
-		return hash.Zero, err
-	}
-	heap.Push(q, CommitInfo{b, cb})
-	for q.Len() > 0 {
-		ci := heap.Pop(q).(CommitInfo)
-		if ancestors[ci.Hash] {
-			return ci.Hash, nil
-		}
-		for _, p := range ci.Commit.Parents {
-			if seen[p] {
-				continue
-			}
-			seen[p] = true
-			pc, err := r.ReadCommit(ctx, p)
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return hash.Zero, err
-			}
-			heap.Push(q, CommitInfo{p, pc})
-		}
-	}
-	return hash.Zero, nil
+	return r.mergeBaseGraph(ctx, a, b)
 }

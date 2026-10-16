@@ -44,7 +44,7 @@ Phase 7 delivers the native client `cmd/f1` (doc/plan.md, "Native client"): work
 
 10. **Local commits.** `commit` stores the changed files' content in a new pack and records each change as `{path, old, new}`.
     - Commits are pushed in order: upload the objects the server lacks (`objects/missing`), then `POST /commits` with the base commit as parent.
-    - A CAS failure tells the user to pull.
+    - A CAS failure tells the user to pull. Since ADR-0014, push asks the server to rebase, so only a change to the same paths fails.
     - `missing_objects` makes the client check and upload again, up to 3 attempts in all. The objects reported present may have been collected by GC since.
     - DigestRecords are never uploaded (decision 15).
 11. **Pull rebases path by path.** History stays linear, since the server never merges (D10). For each local commit, in order, each change to a path the server also changed is merged three-way: the change's old value, its new value, and the path's new value so far.

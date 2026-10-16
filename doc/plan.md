@@ -62,7 +62,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
 | D7 | Metadata | Two levels. Per repository: a ref file (source of truth) and a SQLite cache (`cache.db`) that can be deleted and rebuilt from the packs. Server level: one SQLite database for identity, tokens, S3 keys, ACLs and the repository registry. Pure Go SQLite (`modernc.org/sqlite`) |
 | D8 | Concurrency primitive | Compare-and-swap on refs, serialized per repository in the server process. All other repository data is immutable and append-only |
 | D9 | Storage invariant | An object is stored only if all objects it references are already stored. Single exception: the parent links of the oldest retained commits in a namespace with truncating retention (see "Retention"); `fsck` accepts those and nothing else |
-| D10 | Merge | Client-side only. The server never merges |
+| D10 | Merge | Client-side only. The server never merges file content. A write may opt in to being rebased by the server when no path it changes was changed since its parent (ADR-0014) |
 | D11 | Git protocol | Smart HTTP. Protocol v2 for fetch. v0/v1 for push |
 | D12 | Git namespaces | Must use `layout = tree` and `retention = all` |
 | D13 | Path ACLs | Every hash-addressed access requires read permission on the whole namespace: Git, LFS, the native object endpoints (`/ns/{ns}/objects/...`) and `POST /ns/{ns}/commits`, and therefore the native client. Path-level read ACLs apply only to path-addressed native endpoints (`files`, `tree`, `log`, `diff`) and the S3 API; `log` and `diff` results are filtered to readable paths. Write ACLs apply to all protocols |
@@ -91,7 +91,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
       lock                  empty file; flock held by whoever has the repository open
       packs/
         <ulid>.pack         immutable pack files
-      cache.db              rebuildable cache: object index, digests, git map, upload state
+      cache.db              rebuildable cache: object index, digests, git map, commit graph, upload state
       tmp/                  in-progress uploads and unsealed packs; never copied
 ```
 
@@ -103,7 +103,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
 - `locks`: same atomic-replace scheme as `refs`. Text, one lock per line. Paths are stored as bytes, so in `locks` and `refs.log` every byte outside printable ASCII, and every space, `%` and newline, is percent-encoded (`%XX`).
 - `lock`: an empty file. The server takes an exclusive `flock` on it when it opens the repository and holds it until detach or shutdown. Offline commands (`fsck --dir`, `rebuild-cache`, offline `archive`) take the same lock and refuse to run if it is held. Not part of the repository state; excluded from archives.
 - `packs/`: as in "Pack store". A pack is complete and readable on its own (footer index plus checksum).
-- `cache.db`: object index (hash → pack, offset), digest index, Git map, multipart upload state, GC state. Everything in it is either derivable from `packs/` and `refs` or disposable. If it is missing, corrupt, or its recorded pack list differs from `packs/`, the server rebuilds it when it opens the repository. Index rebuild reads pack footers, then the payloads of DigestRecord objects (small; located through the footer's type field). The Git map for trees, commits and tags is recomputed in the background from metadata and DigestRecords, without reading file content (D21).
+- `cache.db`: object index (hash → pack, offset), digest index, Git map, commit graph (ADR-0015), multipart upload state, GC state. Everything in it is either derivable from `packs/` and `refs` or disposable. If it is missing, corrupt, or its recorded pack list differs from `packs/`, the server rebuilds it when it opens the repository. Index rebuild reads pack footers, then the payloads of DigestRecord objects (small; located through the footer's type field). The Git map for trees, commits and tags is recomputed in the background from metadata and DigestRecords, without reading file content (D21).
 - `tmp/`: in-progress multipart uploads and unsealed pack buffers. Not part of the repository state. Deleted on detach.
 
 Identities and ACLs stay in `server.db`, because they refer to principals that exist across repositories. `f1d repo export-acl <ns>` and `f1d repo import-acl <ns> <file>` move ACLs as a TOML file when needed. Principals unknown on the target server are reported and skipped.
@@ -379,7 +379,7 @@ Target: ≥ 500 small Puts per second per namespace on a single node with SSD.
 
 ## Native API (`/api/v1`)
 
-JSON for metadata, raw bytes for content. Authentication: bearer token. Refs are one URL segment (`%2F` for `/`); `F1-Parent` takes a commit hash or `new`; errors are JSON `{code, message, current?, owner?}`; conventions in ADR-0006. The JSON types are those of `pkg/f1client`.
+JSON for metadata, raw bytes for content. Authentication: bearer token. Refs are one URL segment (`%2F` for `/`); `F1-Parent` takes a commit hash or `new`; `F1-Rebase: true` (or `"rebase": true` in `POST /commits`) applies a write on a moved branch head if none of its paths changed (ADR-0014); errors are JSON `{code, message, current?, owner?, paths?}`; conventions in ADR-0006. Reads by commit hash and object reads are marked immutable for HTTP caches (ADR-0016). The JSON types are those of `pkg/f1client`.
 
 | Method and path | Purpose |
 |---|---|
@@ -389,7 +389,7 @@ JSON for metadata, raw bytes for content. Authentication: bearer token. Refs are
 | `PUT /ns/{ns}/refs/{ref}` | CAS update `{old, new}` |
 | `GET /ns/{ns}/files/{ref}/{path}` | Read file. `ref` may be a ref name or commit hash. Supports `Range` |
 | `HEAD /ns/{ns}/files/{ref}/{path}` | Stat |
-| `PUT /ns/{ns}/files/{ref}/{path}` | Write one file and commit. Header `F1-Parent` (expected commit) is required unless autocommit |
+| `PUT /ns/{ns}/files/{ref}/{path}` | Write one file and commit. Header `F1-Parent` (expected commit) is required unless autocommit; `F1-Rebase: true` allows a moved head (ADR-0014) |
 | `DELETE /ns/{ns}/files/{ref}/{path}` | Delete one file and commit |
 | `GET /ns/{ns}/tree/{ref}/{prefix}?delim=/&after=&limit=` | List |
 | `GET /ns/{ns}/log/{ref}?path=&limit=` | History. Without `path`, requires read on the whole namespace; with `path`, read on that path |
@@ -398,7 +398,7 @@ JSON for metadata, raw bytes for content. Authentication: bearer token. Refs are
 | `POST /ns/{ns}/objects` | Upload a batch of objects (pack stream). Whole-namespace read and write |
 | `GET /ns/{ns}/objects/{hash}` | Download one object. Whole-namespace read |
 | `POST /ns/{ns}/objects/fetch` | Body: list of hashes. Returns pack stream. Whole-namespace read |
-| `POST /ns/{ns}/commits` | Create commit from `{ref, parent, changes, message}` with already uploaded objects. Whole-namespace read, write on the changed paths. If a referenced object is no longer stored (D9), returns `409` with the list of missing hashes |
+| `POST /ns/{ns}/commits` | Create commit from `{ref, parent, changes, message, rebase?}` with already uploaded objects. Whole-namespace read, write on the changed paths. If a referenced object is no longer stored (D9), returns `409` with the list of missing hashes |
 | `POST /ns/{ns}/locks`, `GET`, `DELETE /ns/{ns}/locks/{id}` | Locks (`?force=true` needs admin on the path) |
 | `GET /ns/{ns}/archive` | Stream the repository as a ZIP (admin) |
 | `GET /me`, `POST /me/s3keys`, `GET /me/s3keys`, `DELETE /me/s3keys/{key}` | The caller, and its S3 access keys |
@@ -543,7 +543,7 @@ Pull and merge:
 - Merge per path: if only one side changed, take it. If both changed, the merge strategy depends on content type, never on size:
   - Text (valid UTF-8, no NUL bytes in the first 8 KiB; overridable per glob in the `[merge]` table of `f1repo.toml`, e.g. `"*.svg" = "text"`): 3-way line merge with conflict markers. The implementation must use linear-space diff (Myers with divide-and-conquer or patience diff on line hashes) so large text files merge with bounded memory.
   - Binary: keep both as `<name>.mine` and `<name>.theirs` and mark a conflict.
-- Push = upload missing objects, `POST /ns/{ns}/commits`, which performs the ref CAS. On CAS failure, the client tells the user to pull. If the server answers that objects are missing (they were collected by GC after `objects/missing` reported them present), the client uploads them and retries, up to a fixed number of times.
+- Push = upload missing objects, `POST /ns/{ns}/commits`, which performs the ref CAS. Push asks the server to rebase each commit when others changed only other paths, then updates the working copy as pull does; `--no-rebase` refuses any change on the server (ADR-0014). On a conflict, the client tells the user to pull. If the server answers that objects are missing (they were collected by GC after `objects/missing` reported them present), the client uploads them and retries, up to a fixed number of times.
 - The native client needs read permission on the whole namespace (D13). Sparse checkout limits download size; it is not an access-control mechanism.
 
 Implementation decisions (working copy files, path-addressed reads without pristine copies, rebase of local commits path by path, conflict resolution with `add` and `rm`, the two-level diff that bounds merge memory, and the refusal of client-uploaded DigestRecords) are in ADR-0010.
@@ -663,7 +663,7 @@ internal/content/        ingest pipeline (chunk, hash, compress, digests) and ra
 internal/pack/           pack format, writer, reader
 internal/backend/        Backend interface; fs
 internal/repodir/        repository directory: refs, refs.log, locks files, holds, freeze, archive, import, attach
-internal/cache/          per-repository cache.db (index, digests, git map, uploads); rebuild
+internal/cache/          per-repository cache.db (index, digests, git map, commit graph, uploads); rebuild
 internal/store/          pack store: open pack, sealing, existence check (D9), reads, consolidation
 internal/tree/           prolly tree lookup, iteration, incremental update, diff
 internal/serverdb/       server.db (principals, tokens, S3 keys, ACLs, registry); migrations

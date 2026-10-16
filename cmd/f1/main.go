@@ -34,7 +34,9 @@ Commands:
   add <path>...                          add files; mark conflicts resolved
   rm <path>...                           delete files; resolve as deleted
   commit -m <message>                    record a local commit
-  push                                   send local commits to the server
+  push [--no-rebase]                     send local commits to the server; with
+                                         --no-rebase, fail if others changed
+                                         any file meanwhile
   pull                                   merge the server's new commits
   log [--limit n] [path]                 show history
   diff [path]...                         show uncommitted changes
@@ -122,6 +124,7 @@ func dispatch(ctx context.Context, cmd string, args []string, opts client.Option
 	message := fs.String("m", "", "commit message")
 	limit := fs.Int("limit", 20, "number of commits")
 	force := fs.Bool("force", false, "remove other principals' locks")
+	noRebase := fs.Bool("no-rebase", false, "push: fail if the branch has new commits, even on other paths")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -182,11 +185,24 @@ func dispatch(ctx context.Context, cmd string, args []string, opts client.Option
 		fmt.Fprintf(out, "committed %d change(s) locally; f1 push sends them\n", len(c.Changes))
 		return nil
 	case "push":
-		n, err := wc.Push(ctx)
-		if err == nil && n == 0 {
+		res, err := wc.Push(ctx, !*noRebase)
+		if err != nil {
+			return err
+		}
+		if res.Pushed == 0 {
 			fmt.Fprintln(out, "nothing to push")
 		}
-		return err
+		if pr := res.Pull; pr != nil {
+			fmt.Fprintf(out, "the server rebased the push onto other changes; %d file(s) updated\n", len(pr.Updated))
+			if len(pr.Conflicts) > 0 {
+				for _, p := range pr.Conflicts {
+					fmt.Fprintf(out, "C %s\n", p)
+				}
+				fmt.Fprintln(out, "uncommitted changes conflict with them: resolve the conflicts, then f1 add (or f1 rm) each path")
+				return errConflicts
+			}
+		}
+		return nil
 	case "pull":
 		res, err := wc.Pull(ctx)
 		if err != nil {

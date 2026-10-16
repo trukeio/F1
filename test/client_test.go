@@ -380,3 +380,82 @@ func TestClientUnsafePaths(t *testing.T) {
 		t.Fatal("metadata overwritten")
 	}
 }
+
+// TestClientRebasedPush checks that f1 push lands on top of others'
+// changes to other files, and updates the working copy (ADR-0014).
+func TestClientRebasedPush(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs f1")
+	}
+	e := start(t, envOpts{})
+	e.createNS(t, "docs", "")
+	e.setACL(t, "docs", "group:eng", "", "read,write,lock")
+	e.setACL(t, "docs", "user:bob", "", "read,write,lock")
+	root := t.TempDir()
+	alice := &wcUser{t: t, dir: root, token: e.tokens["alice"]}
+	bob := &wcUser{t: t, dir: root, token: e.tokens["bob"]}
+	alice.ok("clone", e.url, "docs", "a")
+	alice.dir = filepath.Join(root, "a")
+	alice.write("a.txt", "a1\n")
+	alice.write("b.txt", "b1\n")
+	alice.ok("add", "a.txt", "b.txt")
+	alice.ok("commit", "-m", "initial")
+	alice.ok("push")
+	bob.ok("clone", e.url, "docs", "b")
+	bob.dir = filepath.Join(root, "b")
+
+	// Bob changes a.txt; Alice, not up to date, changes b.txt in two
+	// commits and has an uncommitted edit of a third file.
+	bob.write("a.txt", "a2 by bob\n")
+	bob.ok("commit", "-m", "bob a")
+	bob.ok("push")
+	alice.write("b.txt", "b2\n")
+	alice.ok("commit", "-m", "alice b2")
+	alice.write("b.txt", "b3\n")
+	alice.write("new.txt", "new\n")
+	alice.ok("add", "new.txt")
+	alice.ok("commit", "-m", "alice b3")
+	alice.write("notes.txt", "draft\n")
+	out := alice.ok("push")
+	if !strings.Contains(out, "rebased the push") || !strings.Contains(out, "1 file(s) updated") {
+		t.Fatalf("push:\n%s", out)
+	}
+	if alice.read("a.txt") != "a2 by bob\n" || alice.read("b.txt") != "b3\n" || alice.read("notes.txt") != "draft\n" {
+		t.Fatal("working copy after a rebased push")
+	}
+	if out := alice.ok("status"); out != "? notes.txt\n" {
+		t.Fatalf("status after a rebased push: %q", out)
+	}
+	if out := alice.ok("pull"); !strings.Contains(out, "0 file(s) updated") {
+		t.Fatalf("pull after a rebased push:\n%s", out)
+	}
+	log := alice.ok("log")
+	if i, j := strings.Index(log, "alice b3"), strings.Index(log, "bob a"); i < 0 || j < 0 || i > j {
+		t.Fatalf("log:\n%s", log)
+	}
+
+	// The same file changed on both sides still needs a pull.
+	bob.ok("pull")
+	bob.write("b.txt", "b4 by bob\n")
+	bob.ok("commit", "-m", "bob b4")
+	bob.ok("push")
+	alice.write("b.txt", "b4 by alice\n")
+	alice.ok("commit", "-m", "alice b4")
+	if out := alice.fails("run f1 pull", "push"); !strings.Contains(out, "changed there: b.txt") {
+		t.Fatalf("push of a file changed on the server:\n%s", out)
+	}
+
+	// --no-rebase refuses any change on the server.
+	bob.write("new.txt", "newer\n")
+	bob.ok("commit", "-m", "bob new")
+	refs, err := e.admin.Refs(ctx, "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, e.admin, "docs", "other.txt", "other\n", refs[0].Commit)
+	bob.fails("run f1 pull", "push", "--no-rebase")
+	bob.ok("push")
+	if bob.read("other.txt") != "other\n" {
+		t.Fatal("other.txt not updated by the rebased push")
+	}
+}

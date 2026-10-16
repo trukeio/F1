@@ -137,6 +137,18 @@ func (wc *WC) Pull(ctx context.Context) (*PullResult, error) {
 		}
 		mineChanged := folded || work[path] != nil || (isUntracked[path] && h != nil)
 		switch {
+		case !mineChanged && sameContent(base, h):
+			// The working copy already holds the new value: a commit this
+			// client pushed and the server rebased (ADR-0014).
+			if h != nil && wc.Index[path].File != h.File {
+				p.do(func() error {
+					ie := wc.Index[path]
+					local := ie.localHash()
+					ie.Entry = *h
+					ie.Local = local
+					return nil
+				})
+			}
 		case !mineChanged && h == nil:
 			p.do(func() error {
 				delete(wc.Index, path)

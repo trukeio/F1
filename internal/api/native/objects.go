@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/trukeio/f1/internal/hash"
 	"github.com/trukeio/f1/internal/object"
@@ -126,6 +127,15 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	// Objects are immutable (ADR-0016): a cached copy is always current
+	// while the object is stored.
+	etag := `"` + h.String() + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", cacheImmutable)
+	if etagMatch(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return nil
+	}
 	payload, err := rec.Payload(nil)
 	if err != nil {
 		return err
@@ -134,6 +144,17 @@ func (s *Server) getObject(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("F1-Type", rec.Type.String())
 	_, err = w.Write(payload)
 	return err
+}
+
+// etagMatch reports whether an If-None-Match header matches etag.
+func etagMatch(header, etag string) bool {
+	for _, t := range strings.Split(header, ",") {
+		t = strings.TrimSpace(t)
+		if t == "*" || strings.TrimPrefix(t, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchObjects streams the requested objects as a pack stream, in the
@@ -226,8 +247,8 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) error {
 			return badRequest("unknown change op %q", ch.Op)
 		}
 	}
-	h, err := rp.Commit(r.Context(), repo.CommitRequest{Ref: req.Ref, Parent: &parent, Changes: changes,
-		Author: person(c), Message: req.Message, Principal: c.Principal, CheckPath: writeCheck(g)})
+	h, base, err := rp.CommitOn(r.Context(), repo.CommitRequest{Ref: req.Ref, Parent: &parent, Changes: changes,
+		Author: person(c), Message: req.Message, Principal: c.Principal, CheckPath: writeCheck(g), Rebase: req.Rebase})
 	if err != nil {
 		return err
 	}
@@ -240,5 +261,5 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) error {
 			rp.DigestLater(ch.Entry.Target)
 		}
 	}
-	return writeJSON(w, api.CommitResult{Commit: h.String()})
+	return writeJSON(w, api.CommitResult{Commit: h.String(), Parent: hexOrEmpty(base)})
 }

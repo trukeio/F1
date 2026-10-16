@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -502,7 +503,7 @@ func TestSizeTransparencyClient(t *testing.T) {
 		if _, err := wc.Commit(ctx, msg); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := wc.Push(ctx); err != nil {
+		if _, err := wc.Push(ctx, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -546,14 +547,14 @@ func TestSizeTransparencyClient(t *testing.T) {
 			if _, err := wc2.Commit(ctx, "edit 2"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := wc2.Push(ctx); err != client.ErrRemoteChanged {
+			if _, err := wc2.Push(ctx, true); !errors.Is(err, client.ErrRemoteChanged) {
 				t.Fatalf("push before pull: %v", err)
 			}
 			res, err := wc2.Pull(ctx)
 			if err != nil || res.Rebased != 1 || len(res.Conflicts) != 0 {
 				t.Fatalf("pull = %+v, %v", res, err)
 			}
-			if _, err := wc2.Push(ctx); err != nil {
+			if _, err := wc2.Push(ctx, true); err != nil {
 				t.Fatal(err)
 			}
 			merged := sha256Of(t, sizeText(n, map[int64]string{k1: "mine", k2: "theirs"}))

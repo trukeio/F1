@@ -219,6 +219,9 @@ type PutOptions struct {
 	Parent      string
 	ContentType string
 	Message     string
+	// Rebase applies the write on the current head if the ref has moved
+	// but the path has not changed since Parent (ADR-0014).
+	Rebase bool
 }
 
 // Put writes a file and commits it. size is the content length, or -1 if
@@ -246,6 +249,9 @@ func setPutHeaders(hdr http.Header, opts *PutOptions) {
 	}
 	if opts.Message != "" {
 		hdr.Set("F1-Message", opts.Message)
+	}
+	if opts.Rebase {
+		hdr.Set("F1-Rebase", "true")
 	}
 }
 

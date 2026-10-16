@@ -131,6 +131,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.As(err, &ce):
 		ae = newErr(http.StatusConflict, api.CodeConflict, "%s", err.Error())
 		ae.body.Current = hexOrEmpty(ce.Current)
+		ae.body.Paths = ce.Paths
 	case errors.As(err, &le):
 		ae = newErr(http.StatusLocked, api.CodeLocked, "%s", err.Error())
 		ae.body.Owner = le.Owner
@@ -480,6 +481,7 @@ func (s *Server) getFile(w http.ResponseWriter, r *http.Request) error {
 	h := w.Header()
 	h.Set("Content-Type", ct)
 	h.Set("ETag", `"`+e.Target.String()+`"`)
+	h.Set("Cache-Control", cacheControl(rp, r.PathValue("ref"), commit))
 	h.Set("F1-Commit", commit.String())
 	h.Set("F1-File", e.Target.String())
 	h.Set("F1-Kind", kindNames[e.Kind])
@@ -519,12 +521,12 @@ func (s *Server) putFile(w http.ResponseWriter, r *http.Request) error {
 		e.Attrs = &object.Attrs{ContentType: ct}
 	}
 	ch := repo.Change{Op: repo.OpPut, Path: path, Entry: e}
-	commit, err := s.write(r, rp, c, g, parent, hasParent, ch, "put "+path)
+	commit, base, err := s.write(r, rp, c, g, parent, hasParent, ch, "put "+path)
 	if err != nil {
 		return err
 	}
 	return writeJSON(w, api.PutResult{
-		Commit: commit.String(), File: res.File.String(), Size: int64(res.Size),
+		Commit: commit.String(), Parent: hexOrEmpty(base), File: res.File.String(), Size: int64(res.Size),
 		SHA256: hex.EncodeToString(res.Digests.SHA256[:]), SHA1Git: hex.EncodeToString(res.Digests.SHA1Git[:]),
 		MD5: hex.EncodeToString(res.Digests.MD5[:]),
 	})
@@ -553,11 +555,27 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) error {
 	if _, err := rp.Stat(r.Context(), at, path); err != nil {
 		return err
 	}
-	commit, err := s.write(r, rp, c, g, parent, hasParent, repo.Change{Op: repo.OpDelete, Path: path}, "delete "+path)
+	commit, base, err := s.write(r, rp, c, g, parent, hasParent, repo.Change{Op: repo.OpDelete, Path: path}, "delete "+path)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, api.CommitResult{Commit: commit.String()})
+	return writeJSON(w, api.CommitResult{Commit: commit.String(), Parent: hexOrEmpty(base)})
+}
+
+// Cache-Control values (ADR-0016). Responses depend on the caller's
+// permissions, so they are private.
+const (
+	cacheImmutable  = "private, max-age=31536000, immutable"
+	cacheRevalidate = "private, no-cache"
+)
+
+// cacheControl returns the Cache-Control of a read at ref: immutable when
+// ref is a commit hash rather than a ref name.
+func cacheControl(rp *repo.Repo, ref string, commit hash.Hash) string {
+	if h, err := hash.Parse(ref); err == nil && h == commit && rp.Ref(ref).IsZero() {
+		return cacheImmutable
+	}
+	return cacheRevalidate
 }
 
 // parentHeader reads F1-Parent: a commit hash, or "new" for a ref that must
@@ -575,17 +593,35 @@ func parentHeader(r *http.Request) (hash.Hash, bool, error) {
 }
 
 // write commits one change: with an expected parent directly, otherwise
-// through the group committer (autocommit).
-func (s *Server) write(r *http.Request, rp *repo.Repo, c *auth.Caller, g *auth.Grants, parent hash.Hash, hasParent bool, ch repo.Change, msg string) (hash.Hash, error) {
+// through the group committer (autocommit). It returns the new commit and,
+// with an expected parent, the commit it was built on.
+func (s *Server) write(r *http.Request, rp *repo.Repo, c *auth.Caller, g *auth.Grants, parent hash.Hash, hasParent bool, ch repo.Change, msg string) (hash.Hash, hash.Hash, error) {
 	ref := r.PathValue("ref")
 	if m := r.Header.Get("F1-Message"); m != "" {
 		msg = m
 	}
-	if hasParent {
-		return rp.Commit(r.Context(), repo.CommitRequest{Ref: ref, Parent: &parent, Changes: []repo.Change{ch},
-			Author: person(c), Message: msg, Principal: c.Principal, CheckPath: writeCheck(g)})
+	rebase, err := rebaseHeader(r)
+	if err != nil {
+		return hash.Zero, hash.Zero, err
 	}
-	return rp.Submit(r.Context(), repo.SubmitRequest{Ref: ref, Change: ch, Author: person(c), Principal: c.Principal, Message: msg})
+	if hasParent {
+		return rp.CommitOn(r.Context(), repo.CommitRequest{Ref: ref, Parent: &parent, Changes: []repo.Change{ch},
+			Author: person(c), Message: msg, Principal: c.Principal, CheckPath: writeCheck(g), Rebase: rebase})
+	}
+	h, err := rp.Submit(r.Context(), repo.SubmitRequest{Ref: ref, Change: ch, Author: person(c), Principal: c.Principal, Message: msg})
+	return h, hash.Zero, err
+}
+
+// rebaseHeader reads F1-Rebase (ADR-0014).
+func rebaseHeader(r *http.Request) (bool, error) {
+	switch v := r.Header.Get("F1-Rebase"); v {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, badRequest("F1-Rebase must be true or false, not %q", v)
+	}
 }
 
 // --- listings, history, diff ---

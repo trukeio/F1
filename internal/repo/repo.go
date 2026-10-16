@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,9 @@ type Repo struct {
 
 	refMu sync.Mutex
 	refs  map[string]hash.Hash
+
+	graphMu sync.Mutex // guards graph (ADR-0015)
+	graph   graphState
 
 	gateMu   sync.Mutex
 	gateCond *sync.Cond
@@ -215,9 +219,13 @@ type ConflictError struct {
 	Ref      string
 	Expected hash.Hash
 	Current  hash.Hash
+	Paths    []string // a refused rebase: the paths changed since Expected
 }
 
 func (e *ConflictError) Error() string {
+	if len(e.Paths) > 0 {
+		return fmt.Sprintf("repo: ref %s is %s, expected %s, and changed %s since", e.Ref, e.Current.Short(), e.Expected.Short(), strings.Join(e.Paths, ", "))
+	}
 	return fmt.Sprintf("repo: ref %s is %s, expected %s", e.Ref, e.Current.Short(), e.Expected.Short())
 }
 

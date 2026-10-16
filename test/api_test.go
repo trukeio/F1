@@ -421,3 +421,135 @@ func TestMetrics(t *testing.T) {
 		t.Error("per-namespace metrics are off by default")
 	}
 }
+
+// TestHTTPCaching checks the cache headers of immutable reads (ADR-0016).
+func TestHTTPCaching(t *testing.T) {
+	e := start(t, envOpts{})
+	e.createNS(t, "proj", "")
+	e.setACL(t, "proj", "user:alice", "", "read,write")
+	r1 := put(t, e.alice, "proj", "a.txt", "one", "new")
+	do := func(path, inm string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest("GET", e.url+"/api/v1/ns/proj/"+path, nil)
+		req.Header.Set("Authorization", "Bearer "+e.tokens["alice"])
+		if inm != "" {
+			req.Header.Set("If-None-Match", inm)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp
+	}
+	const immutable = "private, max-age=31536000, immutable"
+	for _, c := range []struct {
+		path, cc string
+	}{
+		{"files/" + r1.Commit + "/a.txt", immutable},
+		{"files/main/a.txt", "private, no-cache"},
+		{"objects/" + r1.File, immutable},
+	} {
+		resp := do(c.path, "")
+		if resp.StatusCode != 200 || resp.Header.Get("Cache-Control") != c.cc {
+			t.Fatalf("%s: %d, Cache-Control %q", c.path, resp.StatusCode, resp.Header.Get("Cache-Control"))
+		}
+		etag := resp.Header.Get("ETag")
+		if etag != `"`+r1.File+`"` {
+			t.Fatalf("%s: ETag %q", c.path, etag)
+		}
+		if resp := do(c.path, etag); resp.StatusCode != http.StatusNotModified {
+			t.Fatalf("%s revalidation: %d", c.path, resp.StatusCode)
+		}
+		if resp := do(c.path, `"other"`); resp.StatusCode != 200 {
+			t.Fatalf("%s with another ETag: %d", c.path, resp.StatusCode)
+		}
+	}
+	// A changed file fails revalidation through the ref name.
+	put(t, e.alice, "proj", "a.txt", "two", r1.Commit)
+	if resp := do("files/main/a.txt", `"`+r1.File+`"`); resp.StatusCode != 200 {
+		t.Fatalf("revalidation of a changed file: %d", resp.StatusCode)
+	}
+	// A branch named like the commit it points to can still move.
+	if err := e.alice.UpdateRef(ctx, "proj", "heads/"+r1.Commit, "", r1.Commit); err != nil {
+		t.Fatal(err)
+	}
+	if resp := do("files/"+r1.Commit+"/a.txt", ""); resp.Header.Get("Cache-Control") != "private, no-cache" {
+		t.Fatalf("ref named like a hash: %q", resp.Header.Get("Cache-Control"))
+	}
+	// Permission is checked before a 304.
+	if resp := func() *http.Response {
+		req, _ := http.NewRequest("GET", e.url+"/api/v1/ns/proj/objects/"+r1.File, nil)
+		req.Header.Set("Authorization", "Bearer "+e.tokens["bob"])
+		req.Header.Set("If-None-Match", `"`+r1.File+`"`)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}(); resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("object without permission: %d", resp.StatusCode)
+	}
+}
+
+// TestRebaseAPI checks server-side rebase through the native API
+// (ADR-0014).
+func TestRebaseAPI(t *testing.T) {
+	e := start(t, envOpts{})
+	e.createNS(t, "proj", "")
+	e.setACL(t, "proj", "group:eng", "", "read,write,lock")
+	e.setACL(t, "proj", "user:bob", "", "read,write,lock")
+	base := put(t, e.alice, "proj", "a.txt", "a", "new")
+	r2 := put(t, e.alice, "proj", "b.txt", "b", base.Commit)
+
+	// Bob, still at base, writes another file: rebased onto Alice's commit.
+	res, err := e.bob.Put(ctx, "proj", "main", "c.txt", strings.NewReader("c"), 1, &f1client.PutOptions{Parent: base.Commit, Rebase: true})
+	if err != nil || res.Parent != r2.Commit {
+		t.Fatalf("rebased put = %+v, %v", res, err)
+	}
+	if got := get(t, e.bob, "proj", "main", "b.txt"); got != "b" {
+		t.Fatal("rebase lost the other write")
+	}
+	// Without the option, the same write is a conflict as before.
+	if _, err := e.bob.Put(ctx, "proj", "main", "d.txt", strings.NewReader("d"), 1, &f1client.PutOptions{Parent: base.Commit}); f1client.Code(err) != f1client.CodeConflict {
+		t.Fatalf("strict put: %v", err)
+	}
+	// A path changed since the parent is a conflict that names it.
+	_, err = e.bob.Put(ctx, "proj", "main", "b.txt", strings.NewReader("B"), 1, &f1client.PutOptions{Parent: base.Commit, Rebase: true})
+	var ae *f1client.APIError
+	if !errors.As(err, &ae) || ae.Error_.Code != f1client.CodeConflict || fmt.Sprint(ae.Error_.Paths) != "[b.txt]" || ae.Error_.Current != res.Commit {
+		t.Fatalf("overlapping rebase: %v", err)
+	}
+	// Deletes and POST /commits rebase too.
+	d, err := e.bob.Delete(ctx, "proj", "main", "a.txt", &f1client.PutOptions{Parent: base.Commit, Rebase: true})
+	if err != nil || d.Parent != res.Commit {
+		t.Fatalf("rebased delete = %+v, %v", d, err)
+	}
+	c, err := e.alice.Commit(ctx, "proj", f1client.CommitRequest{Ref: "main", Parent: r2.Commit, Rebase: true, Message: "copy",
+		Changes: []f1client.CommitChange{{Op: "put", Path: "copy.txt", Entry: &f1client.Entry{Kind: "file", Target: r2.File}}}})
+	if err != nil || c.Parent != d.Commit {
+		t.Fatalf("rebased commit = %+v, %v", c, err)
+	}
+	// Locks taken after the parent still apply.
+	if _, err := e.alice.Lock(ctx, "proj", "main", "c.txt", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.bob.Put(ctx, "proj", "main", "c.txt", strings.NewReader("C"), 1, &f1client.PutOptions{Parent: res.Commit, Rebase: true}); f1client.Code(err) != f1client.CodeLocked {
+		t.Fatalf("rebased write to a locked file: %v", err)
+	}
+	// A bad header value is refused.
+	req, _ := http.NewRequest("PUT", e.url+"/api/v1/ns/proj/files/main/x.txt", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+e.tokens["bob"])
+	req.Header.Set("F1-Parent", base.Commit)
+	req.Header.Set("F1-Rebase", "yes")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("F1-Rebase: yes: %d", resp.StatusCode)
+	}
+}

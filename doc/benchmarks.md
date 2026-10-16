@@ -54,6 +54,24 @@ What changed (ADR-0012):
 
 The small Put rate varies most between runs on the reference machine: from about 1,700 to 3,450 per second in one series. That machine's memory is under pressure (its swap is full), and the ingest benchmark that runs before it writes over a gigabyte to tmpfs. Medians of five runs absorb most of this, but a single run says little.
 
+## History queries
+
+The history benchmarks of ADR-0015 are in `internal/repo/history_bench_test.go`. They run on a generated history: 5,000 files in 100 directories, each commit changing two random files. `F1_BENCH_COMMITS` sets the number of commits (2,000 by default, so that `go test -bench .` stays quick):
+
+```
+F1_BENCH_COMMITS=60000 go test ./internal/repo -run '^$' -bench 'LogRare|MergeBase' -benchtime 5x -timeout 30m
+```
+
+`cold-ms` is the first query on an empty commit graph, which computes the index. Results on the reference machine, 60,000 commits:
+
+| Benchmark | Before ADR-0015 | After | `cold-ms` |
+|---|---|---|---|
+| `LogRarePath`: log of a path changed once, `limit` 20 | 11.8 s | 94 ms | 8,266 |
+| `MergeBaseNewBranch`: merge base when a branch is created at the head | 563 ms | 1.3 µs | 834 |
+| `MergeBaseApart`: merge base of branches 10,000 commits apart | 326 ms | 8.1 ms | |
+
+These benchmarks are not in `make bench`: building the 60,000-commit history takes about two minutes. ADR-0015 also records the same queries on golang/go (68,110 commits) through the native API: a path log of a file changed once went from 6.5 s to about 1 s after an 18.6 s first query, and branch creation from 0.8–2 s to under 10 ms.
+
 ## Other measurements
 
 These are acceptance tests rather than benchmarks; see their ADRs.

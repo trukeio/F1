@@ -75,6 +75,9 @@ type PutResult struct {
 	SHA256  string `json:"sha256"`
 	SHA1Git string `json:"sha1git"`
 	MD5     string `json:"md5"`
+	// Parent is the commit the new commit was built on: the requested
+	// parent, or with Rebase the branch head it was rebased on.
+	Parent string `json:"parent,omitempty"`
 }
 
 // ListItem is a file, or a collapsed prefix when Prefix is set.
@@ -134,11 +137,16 @@ type CommitRequest struct {
 	Parent  string         `json:"parent"`
 	Changes []CommitChange `json:"changes"`
 	Message string         `json:"message"`
+	// Rebase applies the changes on the current head if the ref has moved
+	// but no path they name has changed since Parent (ADR-0014).
+	Rebase bool `json:"rebase,omitempty"`
 }
 
 // CommitResult is the hash of a new commit.
 type CommitResult struct {
 	Commit string `json:"commit"`
+	// Parent is the commit the new commit was built on (see PutResult).
+	Parent string `json:"parent,omitempty"`
 }
 
 // HashList is a list of object hashes.
@@ -193,6 +201,9 @@ type Error struct {
 	Message string `json:"message"`
 	Current string `json:"current,omitempty"` // conflict: the ref's current value
 	Owner   string `json:"owner,omitempty"`   // locked: the lock holder
+	// Paths lists, for a refused rebase, the paths changed since the
+	// parent.
+	Paths []string `json:"paths,omitempty"`
 }
 
 // Error codes.

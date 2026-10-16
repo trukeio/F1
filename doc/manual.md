@@ -41,7 +41,7 @@ The same namespace answers every protocol. A file pushed with Git is readable wi
 
 **One copy of everything.** Content is stored once per repository, however many versions, paths or protocols refer to it. History costs only what changed, measured in chunks of about 64 KiB.
 
-**The server never merges.** It accepts a new commit only if it is based on the branch's current commit (compare-and-swap). Merging happens in the client: Git, or `f1 pull` for the native client (D10).
+**The server never merges file content.** It accepts a new commit if it is based on the branch's current commit (compare-and-swap), or, when the writer asks, if none of the files it changes were changed since its base (a rebase, as Subversion does). Merging the content of a file changed on both sides happens in the client: Git, or `f1 pull` for the native client (D10, ADR-0014).
 
 **What you cannot read does not exist.** A namespace or bucket you have no permission in answers "not found", exactly as one that does not exist.
 
@@ -269,7 +269,9 @@ f1 <command> [flags] [args]
   add <path>...                          add files; mark conflicts resolved
   rm <path>...                           delete files; resolve as deleted
   commit -m <message>                    record a local commit
-  push                                   send local commits to the server
+  push [--no-rebase]                     send local commits to the server; with
+                                         --no-rebase, fail if others changed
+                                         any file meanwhile
   pull                                   merge the server's new commits
   log [--limit n] [path]                 show history
   diff [path]...                         show uncommitted changes
@@ -338,7 +340,24 @@ $ f1 push
 pushed 4a7dd57ad875 Initial design
 ```
 
-Push sends local commits in order: it uploads the content the server lacks, then asks the server to move the branch from your base commit to the new one. If someone pushed in the meantime, push fails and tells you to pull. If the server refuses a commit (a locked file, a missing permission), push stops there; earlier commits stay pushed.
+Push sends local commits in order: it uploads the content the server lacks, then asks the server to move the branch from your base commit to the new one.
+
+If someone pushed in the meantime, the outcome depends on what they changed:
+
+- **Other files:** the server puts your commits on top of theirs, and push then updates your working copy with their changes, as `f1 pull` would. This is Subversion's rule: a commit fails only if one of its files is out of date.
+- **The same files:** push fails, names them, and tells you to pull. Pull merges the changes into your commits; then push again.
+
+`f1 push --no-rebase` fails whenever the branch has moved, even on other files. Use it when your commits must be tested exactly as they will land.
+
+If the server refuses a commit (a locked file, a missing permission), push stops there; earlier commits stay pushed.
+
+```sh
+$ f1 push
+pushed 9c1e4b07d2aa Alice edits b.txt
+the server rebased the push onto other changes; 1 file(s) updated
+$ f1 push
+f1 push: the branch has new commits on the server; run f1 pull, then push again (changed there: b.txt)
+```
 
 ```sh
 $ f1 push
@@ -614,8 +633,10 @@ The native API is plain HTTP under `/api/v1` on the main port: JSON for metadata
 - **Authentication.** `Authorization: Bearer <token>`: a local `f1_…` token or an OIDC access token.
 - **Refs in URLs.** A ref is one path segment: `main`, `heads%2Frev-b`, or a commit hash. Short names mean branches (`main` is `heads/main`).
 - **Parents.** A write names the commit it is based on in the `F1-Parent` header: a commit hash, or `new` for a branch that must not exist yet. Autocommit namespaces need no parent; elsewhere a write without one answers `428 parent_required`. If the branch has moved, the write fails with `409 conflict` and the current commit.
+- **Rebase.** With `F1-Rebase: true` (in `POST /commits`: `"rebase": true`), a write whose branch has moved is applied on top of the current commit instead, if none of its paths changed since its parent, and none of their directories was deleted or replaced by a file. Otherwise it fails with `409 conflict`, and `paths` lists the paths that changed. The result's `parent` is the commit the write was built on: when it differs from the one you sent, your write was rebased. Use it when your writes stand alone, such as an agent or a script updating its own files. Leave it off when a write is only correct together with the files it was based on.
 - **Reads** support `Range`, `If-Match`, `If-None-Match` and `HEAD`. The ETag is the File hash. Headers `F1-Commit`, `F1-File`, `F1-Kind` and `F1-Size` describe the result.
-- **Errors** are JSON: `{"code": "...", "message": "...", "current": "...", "owner": "..."}` (§3.4).
+- **Caching.** A read by commit hash never changes. It is sent with `Cache-Control: private, max-age=31536000, immutable`, as are reads of `objects/{hash}`. A read by branch name is sent with `private, no-cache`, so a cache revalidates it, and gets `304 Not Modified` while the file is unchanged.
+- **Errors** are JSON: `{"code": "...", "message": "...", "current": "...", "owner": "...", "paths": [...]}` (§3.4).
 
 ```sh
 $ curl -H "Authorization: Bearer $F1_TOKEN" -H "F1-Parent: $(…current commit…)" \
@@ -635,8 +656,8 @@ Paths below are relative to `/api/v1`.
 | `GET /ns/{ns}/refs` | list refs | read |
 | `PUT /ns/{ns}/refs/{ref}` | move a ref: `{"old", "new"}`, compare-and-swap | write on the changed files |
 | `GET`, `HEAD /ns/{ns}/files/{ref}/{path}` | read or stat a file at a ref or commit | read on the path |
-| `PUT /ns/{ns}/files/{ref}/{path}` | write a file and commit; `F1-Parent`, `F1-Message`, `Content-Type` | write on the path |
-| `DELETE /ns/{ns}/files/{ref}/{path}` | delete a file and commit | write on the path |
+| `PUT /ns/{ns}/files/{ref}/{path}` | write a file and commit; `F1-Parent`, `F1-Rebase`, `F1-Message`, `Content-Type` | write on the path |
+| `DELETE /ns/{ns}/files/{ref}/{path}` | delete a file and commit; `F1-Parent`, `F1-Rebase`, `F1-Message` | write on the path |
 | `GET /ns/{ns}/tree/{ref}/{prefix}?delim=/&after=&limit=` | list files, by page | read; filtered to readable paths |
 | `GET /ns/{ns}/log/{ref}?path=&limit=` | history, of a ref or of one path | read on the namespace, or on the path |
 | `GET /ns/{ns}/diff/{a}..{b}?prefix=` | changed files between two commits | read; filtered to readable paths |
@@ -644,7 +665,7 @@ Paths below are relative to `/api/v1`.
 | `POST /ns/{ns}/objects` | upload objects as a pack stream | whole-namespace read and write |
 | `GET /ns/{ns}/objects/{hash}` | one object | whole-namespace read |
 | `POST /ns/{ns}/objects/fetch` | several objects as a pack stream | whole-namespace read |
-| `POST /ns/{ns}/commits` | commit uploaded objects: `{"ref", "parent", "changes", "message"}` | whole-namespace read; write on the changed paths |
+| `POST /ns/{ns}/commits` | commit uploaded objects: `{"ref", "parent", "changes", "message", "rebase"}` | whole-namespace read; write on the changed paths |
 | `POST /ns/{ns}/locks`, `GET /ns/{ns}/locks`, `DELETE /ns/{ns}/locks/{id}` | take, list and release locks | lock; `?force=true` needs admin |
 | `GET /ns/{ns}/archive` | the repository as a ZIP | admin |
 | `GET /me` | who you are, with your groups | |
@@ -781,7 +802,7 @@ func main() {
 | 401 | `unauthenticated` | no token, or an invalid, expired or revoked one | get a new token |
 | 403 | `forbidden` | the ACL does not allow it | ask an administrator |
 | 404 | `not_found` | no such namespace, ref or file, or no permission to know | |
-| 409 | `conflict` | the branch moved; `current` is its commit | read it, redo the change, retry |
+| 409 | `conflict` | the branch moved; `current` is its commit; with `F1-Rebase`, `paths` lists the paths changed meanwhile | read it, redo the change, retry |
 | 409 | `path_conflict` | a file is in the way of a directory, or the reverse | |
 | 409 | `exists` | the name is taken | |
 | 409 | `missing_objects` | a commit names objects that are not stored (collected meanwhile) | upload them and retry |
@@ -1096,6 +1117,8 @@ Logs are structured (`log/slog`); `log.format = "json"` suits log collectors.
 | S3 GET of a 4 KiB object | 472 µs |
 | Sequential read of a 64 MiB file | 1,628 MB/s |
 | `git clone` of 300 commits over 400 files | 529 ms, 0.43 MiB pack |
+| History of a file changed once, golang/go (68,110 commits) | about 1 s (18.6 s for the first query) |
+| Creating a branch, golang/go | under 10 ms (up to 4.2 s the first time) |
 
 `make bench` runs the benchmarks and `make bench-check` compares them with the recorded baseline.
 

@@ -19,10 +19,10 @@ import (
 	"github.com/trukeio/f1/internal/pack"
 )
 
-// SchemaVersion is stored in PRAGMA user_version. Caches of versions 1 and
-// 2 are upgraded in place; a cache with any other version is discarded and
+// SchemaVersion is stored in PRAGMA user_version. Caches of versions 1 to
+// 3 are upgraded in place; a cache with any other version is discarded and
 // rebuilt.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // ErrSchema is returned by Open for a cache with another schema version.
 var ErrSchema = errors.New("cache: schema version mismatch")
@@ -56,7 +56,7 @@ CREATE TABLE pending_deletes (
 	name  TEXT PRIMARY KEY,
 	after INTEGER NOT NULL
 );
-` + uploadsSchema + gitMapSchema
+` + uploadsSchema + gitMapSchema + graphSchema
 
 // gitMapSchema maps F1 objects to the Git objects they export as (version
 // 3). Blobs are not in it: their Git ids are in digests. Export is
@@ -150,8 +150,11 @@ func (c *DB) init() error {
 		if _, err := c.db.Exec(schema + fmt.Sprintf("PRAGMA user_version = %d;", SchemaVersion)); err != nil {
 			return fmt.Errorf("cache: create schema: %w", err)
 		}
-	case 1, 2:
-		upgrade := gitMapSchema
+	case 1, 2, 3:
+		upgrade := graphSchema
+		if version <= 2 {
+			upgrade = gitMapSchema + upgrade
+		}
 		if version == 1 {
 			upgrade = uploadsSchema + upgrade
 		}
