@@ -88,7 +88,7 @@ func identityCmd(ctx context.Context, group string, args []string, stdout, stder
 	expires := fs.Duration("expires", 0, "token create: lifetime (0: no expiry)")
 	description := fs.String("description", "", "token create: description")
 	preset := fs.String("preset", "", "ns create: s3, svn or git")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}

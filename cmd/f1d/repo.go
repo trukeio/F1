@@ -50,7 +50,7 @@ func repoCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	name := fs.String("name", "", "import: namespace name (default: archive root or directory name)")
 	newUUID := fs.Bool("new-uuid", false, "import: give the repository a new UUID")
 	dir := fs.String("dir", "", "rebuild-cache: repository directory")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}

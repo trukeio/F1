@@ -85,7 +85,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "f1d.toml", "path to the configuration file")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -123,7 +123,7 @@ func fsck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	configPath := fs.String("config", "f1d.toml", "path to the configuration file")
 	dir := fs.String("dir", "", "check this repository directory instead of a namespace")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -177,7 +177,7 @@ func gcCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	dryRun := fs.Bool("dry-run", false, "report what would be deleted without deleting it")
 	grace := fs.String("grace", "", "keep unreachable objects written this recently (default: server.gc.grace)")
 	list := fs.Bool("list", false, "list the hashes of the deleted objects")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -262,7 +262,7 @@ func backupCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fs.PrintDefaults()
 	}
 	configPath := fs.String("config", "f1d.toml", "path to the configuration file")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -319,4 +319,21 @@ func backupCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	fmt.Fprintf(stdout, "backup of %d repositories in %s\n", len(rep.Repos), dst)
 	return 0
+}
+
+// parseFlags parses flags that may appear before, between or after the
+// positional arguments, as in "f1d user add alice --group eng". fs.Args
+// then returns the positional arguments.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			return fs.Parse(append([]string{"--"}, pos...))
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
 }

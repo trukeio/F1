@@ -253,7 +253,7 @@ func dispatch(ctx context.Context, cmd string, args []string, opts client.Option
 			return err
 		}
 		for _, l := range list {
-			fmt.Fprintf(out, "%s %s %s\n", l.Path, l.Owner, l.Created.Format("2006-01-02 15:04"))
+			fmt.Fprintf(out, "%s %s %s\n", l.Path, l.Owner, l.Created.Local().Format("2006-01-02 15:04"))
 		}
 		return nil
 	case "checkout":

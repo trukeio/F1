@@ -686,6 +686,7 @@ pkg/f1client/            public Go SDK for the native API
 doc/adr/                 architecture decision records
 doc/format.md            on-disk format specification (written in phase 1)
 doc/admin.md             administration guide
+doc/manual.md            user manual
 doc/benchmarks.md        benchmark results and regression procedure
 deploy/                  systemd unit, container image, deployment config
 scripts/benchcmp/        benchmark comparison (make bench-check)

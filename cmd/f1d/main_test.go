@@ -196,4 +196,12 @@ func TestIdentityCommands(t *testing.T) {
 	}
 	runOK(t, "acl", "rm", "--config", cfg, "hw2", "group:eng", "")
 	runOK(t, "user", "disable", "--config", cfg, "alice")
+
+	// Flags may follow the positional arguments, as the usage text writes them.
+	runOK(t, "user", "add", "bob", "--group", "eng", "--config", cfg)
+	if out := runOK(t, "user", "list", "--config", cfg); !strings.Contains(out, "user:bob\tlocal\tgroup:eng") {
+		t.Fatalf("user list: %q", out)
+	}
+	runOK(t, "ns", "create", "hw3", "--preset", "git", "--config", cfg)
+	runFail(t, "flag provided but not defined", "user", "add", "carol", "--bogus", "--config", cfg)
 }
