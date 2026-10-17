@@ -100,6 +100,7 @@ A namespace is a repository: a self-contained directory `repos/<ns>/`.
 
 `f1web` is a separate server that shows namespaces, files and history in a browser (ADR-0018). It calls the native API as the signed-in user, so users see exactly what their ACLs allow. `deploy/f1web.toml` is an example configuration.
 
+- **Try it:** `make demo` builds and runs `f1d` and `f1web` with this repository and a few others pushed into Git namespaces, and prints the URL and a token to sign in with (`scripts/demo.sh -h` for options).
 - **Run** `f1web --config f1web.toml` next to `f1d`, behind the same TLS-terminating proxy. With an `https` `public_url`, the session cookie is `Secure`.
 - **Sign-in with OIDC.** Register `f1web` at the identity provider as a confidential client with redirect URI `<public_url>/-/auth/callback`. Its access tokens must be accepted by F1, so they must carry F1's audience (`f1`):
   - Keycloak: add an audience mapper for `f1` to the client;

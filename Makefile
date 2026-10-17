@@ -3,7 +3,7 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 FUZZTIME ?= 30s
 
-.PHONY: all build test vet staticcheck fmt-check smoke bench bench-check fuzz ci clean
+.PHONY: all build test vet staticcheck fmt-check smoke bench bench-check fuzz ci demo clean
 
 all: build
 
@@ -53,6 +53,12 @@ fuzz:
 	go test ./internal/api/git -run '^$$' -fuzz FuzzDelta -fuzztime $(FUZZTIME)
 
 ci: fmt-check vet staticcheck test smoke
+
+# A demo F1 server and web viewer with Git repositories in it; see
+# scripts/demo.sh. Pass options with DEMO_ARGS, e.g.
+#   make demo DEMO_ARGS="--keep /tmp/f1demo trukeio/ogdl"
+demo:
+	scripts/demo.sh $(DEMO_ARGS)
 
 clean:
 	rm -rf bin bench.txt
