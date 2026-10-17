@@ -38,7 +38,7 @@ This document is the specification and work plan for implementing F1 in Go. It i
 - OIDC login. Planned for a later version (see "Identity and authorization").
 - SVN wire protocol. SVN users migrate to the native client, Git, or S3. Evaluated and deferred indefinitely (ADR-0017).
 - FUSE or virtual filesystem client.
-- Web UI.
+- Web UI in the server. A separate viewer, `f1web`, is a client of the native API (ADR-0018).
 - Encryption beyond what the storage backend provides.
 - Git SHA-256 repositories.
 - S3 features: bucket policies, ACLs, lifecycle rules, object lock, SSE, tagging, website hosting, select, replication.
@@ -709,6 +709,8 @@ testdata/                golden vectors, Git fixture repositories
 | TOML | `github.com/BurntSushi/toml` |
 | ULID | `github.com/oklog/ulid/v2` |
 | 3-way text merge | F1's own code, with bounded memory for any file size (ADR-0010) |
+| Markdown, web viewer only | `github.com/yuin/goldmark` (ADR-0018) |
+| Syntax highlighting, web viewer only | `github.com/alecthomas/chroma/v2` (ADR-0018) |
 
 Everything else uses the standard library (`net/http`, `log/slog`, `crypto/*`, `hash/crc32`).
 

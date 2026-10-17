@@ -711,10 +711,19 @@ func (s *Server) log(w http.ResponseWriter, r *http.Request) error {
 			return badRequest("invalid limit")
 		}
 	}
-	commits, err := rp.Log(r.Context(), commit, path, limit)
+	skip := 0
+	if v := r.URL.Query().Get("skip"); v != "" {
+		if skip, err = strconv.Atoi(v); err != nil || skip < 0 {
+			return badRequest("invalid skip")
+		}
+	}
+	// A commit is no cursor: the walk merges branches by time, so a page
+	// starts after the first skip commits of the same walk (ADR-0018).
+	commits, err := rp.Log(r.Context(), commit, path, skip+limit)
 	if err != nil {
 		return err
 	}
+	commits = commits[min(skip, len(commits)):]
 	out := make([]api.Commit, len(commits))
 	for i, ci := range commits {
 		out[i] = apiCommit(ci.Hash, ci.Commit)

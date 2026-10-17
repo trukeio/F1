@@ -12,3 +12,8 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [ ] Decide on the other findings: an in-memory cache of tokens and ACLs (it must notice changes written by other processes, for example through `PRAGMA data_version`), anonymous reads, `private` responses that shared caches do not store, and content types.
 - [ ] **Design a web interface for F1.** A web server that accesses an F1 installation and offers a web user interface: browse namespaces, files and history, and view file contents. Decide whether it runs inside the F1 server or as a separate client of its APIs, how users sign in, and what it can change beyond viewing.
   - The user interface should look and work much like GitHub's.
+  - Designed in ADR-0018: a separate server, `f1web`, signing users in with OIDC and calling the native API as them; read-only first.
+  - [x] W0: ADR-0018; `log` pages with `skip`.
+  - [ ] W1: `cmd/f1web` skeleton, configuration, sign-in and sessions.
+  - [ ] W2: read-only pages (namespaces, tree, file, raw, history, commit, compare, branches, tags, locks).
+  - [ ] W3: syntax highlighting, last commit per directory entry, keyboard shortcuts.

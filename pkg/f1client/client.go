@@ -304,9 +304,18 @@ func query(q url.Values) string {
 
 // Log returns the history of a ref, optionally of one path.
 func (c *Client) Log(ctx context.Context, ns, ref, path string, limit int) ([]Commit, error) {
+	return c.LogPage(ctx, ns, ref, path, 0, limit)
+}
+
+// LogPage returns the history of a ref, optionally of one path, leaving
+// out the first skip commits.
+func (c *Client) LogPage(ctx context.Context, ns, ref, path string, skip, limit int) ([]Commit, error) {
 	q := url.Values{}
 	if path != "" {
 		q.Set("path", path)
+	}
+	if skip > 0 {
+		q.Set("skip", strconv.Itoa(skip))
 	}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))

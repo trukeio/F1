@@ -659,7 +659,7 @@ Paths below are relative to `/api/v1`.
 | `PUT /ns/{ns}/files/{ref}/{path}` | write a file and commit; `F1-Parent`, `F1-Rebase`, `F1-Message`, `Content-Type` | write on the path |
 | `DELETE /ns/{ns}/files/{ref}/{path}` | delete a file and commit; `F1-Parent`, `F1-Rebase`, `F1-Message` | write on the path |
 | `GET /ns/{ns}/tree/{ref}/{prefix}?delim=/&after=&limit=` | list files, by page | read; filtered to readable paths |
-| `GET /ns/{ns}/log/{ref}?path=&limit=` | history, of a ref or of one path | read on the namespace, or on the path |
+| `GET /ns/{ns}/log/{ref}?path=&limit=&skip=` | history, of a ref or of one path; `skip` leaves out the first commits, for paging | read on the namespace, or on the path |
 | `GET /ns/{ns}/diff/{a}..{b}?prefix=` | changed files between two commits | read; filtered to readable paths |
 | `POST /ns/{ns}/objects/missing` | which of these hashes are not stored | whole-namespace read |
 | `POST /ns/{ns}/objects` | upload objects as a pack stream | whole-namespace read and write |

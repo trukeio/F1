@@ -90,6 +90,17 @@ func TestFilesRefsLogDiff(t *testing.T) {
 	if err != nil || len(log) != 2 || log[0].Hash != r2.Commit || log[0].Author.Name != "alice" {
 		t.Fatalf("log = %+v, %v", log, err)
 	}
+	page, err := e.alice.LogPage(ctx, "proj", "main", "", 1, 1)
+	if err != nil || len(page) != 1 || page[0].Hash != r1.Commit {
+		t.Fatalf("log page = %+v, %v", page, err)
+	}
+	if page, err = e.alice.LogPage(ctx, "proj", "main", "", 5, 1); err != nil || len(page) != 0 {
+		t.Fatalf("log page past the end = %+v, %v", page, err)
+	}
+	// A commit by hash, for the web viewer's commit page (ADR-0018).
+	if one, err := e.alice.Log(ctx, "proj", r1.Commit, "", 1); err != nil || len(one) != 1 || one[0].Hash != r1.Commit {
+		t.Fatalf("log of a commit hash = %+v, %v", one, err)
+	}
 	diff, err := e.alice.Diff(ctx, "proj", r1.Commit, "main", "")
 	if err != nil || len(diff) != 1 || diff[0].Path != "src/main.go" || diff[0].Old != nil {
 		t.Fatalf("diff = %+v, %v", diff, err)
