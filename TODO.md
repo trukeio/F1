@@ -10,3 +10,4 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [ ] S3 GET, and behind a caching proxy.
   - [x] Prepare the per-request `server.db` queries: −19 % for 10 kB reads, −35 % for a 304.
   - [ ] Decide on the other findings: an in-memory cache of tokens and ACLs (it must notice changes written by other processes, for example through `PRAGMA data_version`), anonymous reads, `private` responses that shared caches do not store, and content types.
+- [ ] **Design a web interface for F1.** A web server that accesses an F1 installation and offers a web user interface: browse namespaces, files and history, and view file contents. Decide whether it runs inside the F1 server or as a separate client of its APIs, how users sign in, and what it can change beyond viewing.
