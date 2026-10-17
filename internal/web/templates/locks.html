@@ -1,0 +1,21 @@
+{{define "content"}}{{with .Data}}{{$p := .}}
+{{template "repohead" .}}
+{{if .Locks}}
+<div class="box scroll">
+<table class="grid">
+  <tr><th>Path</th><th>Ref</th><th>Owner</th><th>Since</th><th>Expires</th></tr>
+  {{range .Locks}}{{$ref := or (shortRef .Ref) $p.Ref}}
+  <tr>
+    <td><a class="mono" href="{{pageURL $p.NS.Name "blob" $ref .Path}}">{{.Path}}</a></td>
+    <td>{{$ref}}</td>
+    <td>{{.Owner}}</td>
+    <td>{{.Created.UTC.Format "2006-01-02 15:04 UTC"}}</td>
+    <td>{{with .Expires}}{{.UTC.Format "2006-01-02 15:04 UTC"}}{{else}}<span class="muted">never</span>{{end}}</td>
+  </tr>
+  {{end}}
+</table>
+</div>
+{{else}}
+<p class="muted">No files are locked.</p>
+{{end}}
+{{end}}{{end}}

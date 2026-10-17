@@ -3,12 +3,15 @@
 
 # Behind a TLS-terminating reverse proxy, listen on localhost only.
 listen = "127.0.0.1:8090"
-# The URL browsers use. The OIDC redirect URI is public_url + "/auth/callback".
+# The URL browsers use. The OIDC redirect URI is public_url + "/-/auth/callback".
 public_url = "https://f1.example.com"
 # The F1 server's main listener.
 f1_url = "http://127.0.0.1:8080"
 # Sign users out after this long without a request.
 session_idle = "8h"
+# The largest file, in bytes, that pages render; larger ones are offered
+# for download.
+max_render = 1048576
 # Let users sign in by pasting an F1 token (local users need it).
 token_login = true
 

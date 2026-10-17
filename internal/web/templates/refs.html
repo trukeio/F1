@@ -1,0 +1,19 @@
+{{define "content"}}{{with .Data}}{{$p := .}}
+{{template "repohead" .}}
+{{if .Refs}}
+<ul class="list">
+  {{range .Refs}}
+  <li>
+    {{if eq $p.Tab "tags"}}<a class="name" href="{{pageURL $p.NS.Name "tree" .Name ""}}">{{.Name}}</a>
+    {{else}}<a class="name" href="{{pageURL $p.NS.Name "tree" (shortRef .Name) ""}}">{{shortRef .Name}}</a>{{end}}
+    {{if eq .Name $p.Default}}<span class="tag">default</span>{{end}}
+    <span class="grow"></span>
+    <a class="mono" href="{{commitURL $p.NS.Name .Commit}}">{{shortHash .Commit}}</a>
+    {{if and (eq $p.Tab "branches") (ne .Name $p.Default)}}<a class="btn" href="{{compareURL $p.NS.Name (shortRef $p.Default) (shortRef .Name)}}">Compare</a>{{end}}
+  </li>
+  {{end}}
+</ul>
+{{else}}
+<p class="muted">No {{.Tab}}.</p>
+{{end}}
+{{end}}{{end}}

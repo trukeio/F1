@@ -84,7 +84,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, status int,
 func (s *Server) loginOIDC(w http.ResponseWriter, r *http.Request) {
 	next := safeNext(r.URL.Query().Get("next"))
 	if s.oidc == nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, "/-/login", http.StatusSeeOther)
 		return
 	}
 	state, verifier := newID(), newID()
@@ -95,7 +95,7 @@ func (s *Server) loginOIDC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sess.addPending(state, pendingLogin{verifier: verifier, next: next})
-	s.setCookie(w, loginCookie, state, "/auth/", int(pendingTTL/time.Second))
+	s.setCookie(w, loginCookie, state, "/-/auth/", int(pendingTTL/time.Second))
 	http.Redirect(w, r, u, http.StatusSeeOther)
 }
 
@@ -104,7 +104,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state := q.Get("state")
 	c, err := r.Cookie(loginCookie)
-	s.setCookie(w, loginCookie, "", "/auth/", -1)
+	s.setCookie(w, loginCookie, "", "/-/auth/", -1)
 	if s.oidc == nil || err != nil || state == "" || c.Value != state {
 		// The login was started in another browser, or long ago.
 		s.renderLogin(w, r, http.StatusBadRequest, "/", "Sign-in failed. Try again.")
@@ -174,7 +174,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		s.sess.delete(sess.id)
 	}
 	s.setCookie(w, s.sessionCookieName(), "", "/", -1)
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	http.Redirect(w, r, "/-/login", http.StatusSeeOther)
 }
 
 // home lists the namespaces the user can see.

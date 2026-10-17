@@ -1,0 +1,25 @@
+{{define "content"}}{{with .Data}}{{$p := .}}
+{{template "repohead" .}}
+<div class="bar">{{template "refpicker" .}}{{if .Path}}<span class="muted">History of</span>{{template "crumbs" .}}{{end}}</div>
+{{if .Note}}<p class="flash">{{.Note}}</p>{{end}}
+{{range .Days}}
+<h2 class="day">Commits on {{.Date}}</h2>
+<ul class="list commits">
+  {{range .Commits}}
+  <li>
+    <div class="grow">
+      <a class="title" href="{{commitURL $p.NS.Name .Hash}}">{{firstLine .Message}}</a>
+      <div class="muted"><strong>{{.Author.Name}}</strong> committed <span title="{{timestamp .Committer.Time}}">{{date .Committer.Time}}</span></div>
+    </div>
+    <a class="btn mono" href="{{commitURL $p.NS.Name .Hash}}">{{shortHash .Hash}}</a>
+    <a class="btn" href="{{pageURL $p.NS.Name "tree" .Hash $p.Path}}" title="Browse the files at this commit">Browse</a>
+  </li>
+  {{end}}
+</ul>
+{{end}}
+{{if and (not .Days) (not .Note)}}<p class="muted">No commits.</p>{{end}}
+<div class="pager">
+  {{if gt .Page 1}}<a class="btn" href="?page={{add .Page -1}}">Newer</a>{{end}}
+  {{if .Older}}<a class="btn" href="?page={{add .Page 1}}">Older</a>{{end}}
+</div>
+{{end}}{{end}}

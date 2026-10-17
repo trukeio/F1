@@ -41,7 +41,7 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, log: log, sess: newSessions(idle), f1: &http.Client{}}
 	if cfg.OIDC != nil {
-		s.oidc = &oidcClient{cfg: *cfg.OIDC, redirect: cfg.PublicURL + "/auth/callback",
+		s.oidc = &oidcClient{cfg: *cfg.OIDC, redirect: cfg.PublicURL + "/-/auth/callback",
 			http: &http.Client{Timeout: 30 * time.Second}}
 	}
 	if s.pages, err = parsePages(); err != nil {
@@ -49,14 +49,15 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	}
 	static, _ := fs.Sub(assets, "static")
 	mux := http.NewServeMux()
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
-	mux.HandleFunc("GET /login", s.loginPage)
-	mux.HandleFunc("GET /login/oidc", s.loginOIDC)
-	mux.HandleFunc("GET /auth/callback", s.callback)
-	mux.HandleFunc("POST /login/token", s.loginToken)
-	mux.HandleFunc("POST /logout", s.logout)
+	mux.Handle("GET /-/static/", http.StripPrefix("/-/static/", http.FileServerFS(static)))
+	mux.HandleFunc("GET /-/healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
+	mux.HandleFunc("GET /-/login", s.loginPage)
+	mux.HandleFunc("GET /-/login/oidc", s.loginOIDC)
+	mux.HandleFunc("GET /-/auth/callback", s.callback)
+	mux.HandleFunc("POST /-/login/token", s.loginToken)
+	mux.HandleFunc("POST /-/logout", s.logout)
 	mux.HandleFunc("GET /{$}", s.page(s.home))
+	s.routes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusNotFound, "error", pageData{Title: "Not found", Message: "This page does not exist."})
 	})
@@ -143,7 +144,7 @@ func (s *Server) page(fn func(w http.ResponseWriter, r *http.Request, rq *reques
 }
 
 func (s *Server) toLogin(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/login?next="+urlQueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+	http.Redirect(w, r, "/-/login?next="+urlQueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 }
 
 // errSignedOut means the session's token can no longer be used.
@@ -155,7 +156,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, sess *session, err
 	case errors.Is(err, errSignedOut), code == f1client.CodeUnauthenticated:
 		s.sess.delete(sess.id)
 		s.toLogin(w, r)
-	case code == f1client.CodeNotFound:
+	case errors.Is(err, errNotFound), code == f1client.CodeNotFound:
 		s.render(w, r, http.StatusNotFound, "error", pageData{User: sess.principal, Title: "Not found",
 			Message: "This page does not exist, or you have no access to it."})
 	case code == f1client.CodeForbidden:
@@ -215,7 +216,8 @@ type pageData struct {
 // UserName is the principal without its "user:" prefix.
 func (d pageData) UserName() string { return strings.TrimPrefix(d.User, "user:") }
 
-// parsePages parses each page template together with the layout.
+// parsePages parses each page template together with the layout and the
+// shared parts.
 func parsePages() (map[string]*template.Template, error) {
 	names, err := fs.Glob(assets, "templates/*.html")
 	if err != nil {
@@ -224,10 +226,10 @@ func parsePages() (map[string]*template.Template, error) {
 	pages := map[string]*template.Template{}
 	for _, n := range names {
 		name := strings.TrimSuffix(strings.TrimPrefix(n, "templates/"), ".html")
-		if name == "layout" {
+		if name == "layout" || name == "parts" {
 			continue
 		}
-		t, err := template.ParseFS(assets, "templates/layout.html", n)
+		t, err := template.New(name).Funcs(templateFuncs()).ParseFS(assets, "templates/layout.html", "templates/parts.html", n)
 		if err != nil {
 			return nil, err
 		}

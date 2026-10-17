@@ -101,12 +101,13 @@ A namespace is a repository: a self-contained directory `repos/<ns>/`.
 `f1web` is a separate server that shows namespaces, files and history in a browser (ADR-0018). It calls the native API as the signed-in user, so users see exactly what their ACLs allow. `deploy/f1web.toml` is an example configuration.
 
 - **Run** `f1web --config f1web.toml` next to `f1d`, behind the same TLS-terminating proxy. With an `https` `public_url`, the session cookie is `Secure`.
-- **Sign-in with OIDC.** Register `f1web` at the identity provider as a confidential client with redirect URI `<public_url>/auth/callback`. Its access tokens must be accepted by F1, so they must carry F1's audience (`f1`):
+- **Sign-in with OIDC.** Register `f1web` at the identity provider as a confidential client with redirect URI `<public_url>/-/auth/callback`. Its access tokens must be accepted by F1, so they must carry F1's audience (`f1`):
   - Keycloak: add an audience mapper for `f1` to the client;
   - Entra ID: request the F1 API's scope (`api://f1/.default`), plus `offline_access` for refresh tokens.
 
   `f1web` refreshes access tokens with the refresh token. Without one, the user signs in again when the access token expires.
 - **Sign-in with a token.** With `token_login = true`, users can paste an F1 token instead; local users have no other way.
+- **Pages** follow GitHub's URLs: `/<namespace>`, `/<namespace>/tree/<ref>/<path>`, `blob`, `raw`, `commits`, `commit/<hash>`, `compare/<a>...<b>`, `branches`, `tags` and `locks`. A ref with `/` is written with `%2F` (`tags%2Fv1`). Files larger than `max_render` bytes (default 1 MiB) are offered for download instead of being displayed or diffed.
 - **Sessions** are kept in memory and end after `session_idle` without a request, at sign-out, or when `f1web` restarts. Tokens stay in `f1web`; the browser holds only a session ID.
 
 ## Operations

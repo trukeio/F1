@@ -47,6 +47,10 @@ Constraints:
    | `/{ns}/compare/{a}...{b}` | the diff between two refs or commits |
    | `/{ns}/branches`, `/{ns}/tags`, `/{ns}/locks` | refs and locks |
 
+   f1web's own pages (sign-in, static files, health check) are under `/-/`. Namespace names start with a letter or digit, so no namespace hides them, and no route hides a namespace.
+   - **Raw files are inert.** File content comes from users and is served from f1web's origin, so `/raw` serves images, audio and video inline, text (HTML and SVG source included) as `text/plain`, and everything else as a download, always with `Content-Security-Policy: sandbox`. No stored file can run script as the signed-in user.
+   - **Markdown** is rendered without raw HTML, and goldmark drops dangerous URLs. Relative links point to the same ref, relative images to `/raw`. The page CSP allows images from f1web only, so external images in Markdown are not loaded.
+   - **Diffs** show at most 1,000 changed files, diff the content of the first 100, and render at most 3,000 lines per file. A file is diffed only if both versions are at most `max_render` bytes and are text.
 9. **Permalinks.** A "copy permalink" action rewrites the URL with the commit hash. Pages addressed by hash can use the immutable `private` caching of ADR-0016.
 10. **Namespace kinds.** A `flat` namespace is shown as a paged key browser. Pages that need history are hidden when the namespace keeps none.
 11. **Partial access.** A user without whole-namespace read cannot use `log` without a path (D13). The history page then asks for a path, and the commit page shows only what the user can read.

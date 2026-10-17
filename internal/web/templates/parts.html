@@ -1,0 +1,65 @@
+{{define "repohead"}}
+<div class="repohead">
+  <h1><a href="/{{.NS.Name}}">{{.NS.Name}}</a>
+    <span class="tag">{{.NS.Config.Layout}}</span>
+    {{if .NS.Config.Git}}<span class="tag">git</span>{{end}}
+    {{if .NS.Frozen}}<span class="tag warn">frozen</span>{{end}}
+  </h1>
+  <nav class="tabs">
+    <a href="{{pageURL .NS.Name "tree" .Ref ""}}"{{if eq .Tab "code"}} class="sel"{{end}}>Code</a>
+    {{if .History}}<a href="{{pageURL .NS.Name "commits" .Ref ""}}"{{if eq .Tab "commits"}} class="sel"{{end}}>Commits</a>{{end}}
+    {{if .NS.Config.Branches}}<a href="/{{.NS.Name}}/branches"{{if eq .Tab "branches"}} class="sel"{{end}}>Branches</a>{{end}}
+    <a href="/{{.NS.Name}}/tags"{{if eq .Tab "tags"}} class="sel"{{end}}>Tags</a>
+    {{if .Locks}}<a href="/{{.NS.Name}}/locks"{{if eq .Tab "locks"}} class="sel"{{end}}>Locks</a>{{end}}
+  </nav>
+</div>
+{{end}}
+
+{{define "refpicker"}}
+<details class="picker">
+  <summary><span class="muted">{{if .RefIsCommit}}commit{{else if hasPrefix .Ref "tags/"}}tag{{else}}branch{{end}}:</span> <strong>{{displayRef .Ref}}</strong></summary>
+  <div class="menu">
+    {{if .Branches}}<div class="menuhead">Branches</div>
+    {{range .Branches}}<a href="{{pageURL $.NS.Name $.View (shortRef .Name) $.Path}}">{{shortRef .Name}}</a>{{end}}{{end}}
+    {{if .Tags}}<div class="menuhead">Tags</div>
+    {{range .Tags}}<a href="{{pageURL $.NS.Name $.View .Name $.Path}}">{{.Name}}</a>{{end}}{{end}}
+  </div>
+</details>
+{{end}}
+
+{{define "crumbs"}}
+<div class="crumbs">
+  <a href="{{pageURL .NS.Name "tree" .Ref ""}}">{{.NS.Name}}</a>
+  {{range .Crumbs}}<span class="sep">/</span>{{if .Last}}<strong>{{.Name}}</strong>{{else}}<a href="{{pageURL $.NS.Name "tree" $.Ref .Path}}">{{.Name}}</a>{{end}}{{end}}
+</div>
+{{end}}
+
+{{define "icon-dir"}}<svg class="icon dir" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"/></svg>{{end}}
+{{define "icon-file"}}<svg class="icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/></svg>{{end}}
+
+{{define "diff"}}
+{{if .Files}}
+<p class="summary">Showing {{len .Files}}{{if gt .Total (len .Files)}} of {{.Total}}{{end}} changed file{{if ne .Total 1}}s{{end}} with <span class="add">{{.Adds}} addition{{if ne .Adds 1}}s{{end}}</span> and <span class="del">{{.Dels}} deletion{{if ne .Dels 1}}s{{end}}</span></p>
+{{range .Files}}
+<div class="box file">
+  <div class="filehead">
+    <span class="status {{.Status}}">{{.Status}}</span>
+    <a class="mono" href="{{if eq .Status "deleted"}}{{pageURL $.NS "blob" $.Base .Path}}{{else}}{{pageURL $.NS "blob" $.Head .Path}}{{end}}">{{.Path}}</a>
+    <span class="counts"><span class="add">+{{.Adds}}</span> <span class="del">−{{.Dels}}</span></span>
+  </div>
+  {{if .Note}}<div class="note">{{.Note}}</div>
+  {{else if not .Hunks}}<div class="note">No changes in the text.</div>
+  {{else}}
+  <div class="scroll"><table class="diff">
+    {{range .Hunks}}<tr class="hunk"><td class="num"></td><td class="num"></td><td class="line">{{.Header}}</td></tr>
+    {{range .Lines}}<tr class="{{.Op}}"><td class="num">{{if .Old}}{{.Old}}{{end}}</td><td class="num">{{if .New}}{{.New}}{{end}}</td><td class="line">{{if eq .Op "add"}}+{{else if eq .Op "del"}}-{{else}} {{end}}{{.Text}}</td></tr>{{end}}
+    {{end}}
+  </table></div>
+  {{if .Truncated}}<div class="note">The diff is too long; the rest is not shown.</div>{{end}}
+  {{end}}
+</div>
+{{end}}
+{{else}}
+<p class="muted">No changes.</p>
+{{end}}
+{{end}}

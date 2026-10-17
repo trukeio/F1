@@ -1,0 +1,26 @@
+{{define "content"}}{{with .Data}}{{$p := .}}
+{{template "repohead" .}}
+<div class="bar">{{template "refpicker" .}}{{template "crumbs" .}}</div>
+<div class="box file">
+  <div class="filehead">
+    <span class="muted">{{if .Lines}}{{len .Lines}} lines · {{end}}{{size .Info.Size}}</span>
+    <span class="actions">
+      {{if .CanPlain}}{{if .Markdown}}<a class="btn" href="?plain=1">Code</a>{{else}}<a class="btn" href="{{pageURL .NS.Name "blob" .Ref .Path}}">Preview</a>{{end}}{{end}}
+      <a class="btn" href="{{pageURL .NS.Name "raw" .Ref .Path}}">Raw</a>
+      {{if .History}}<a class="btn" href="{{pageURL .NS.Name "commits" .Ref .Path}}">History</a>{{end}}
+      {{if not .RefIsCommit}}<a class="btn" href="{{.Permalink}}" title="This file at commit {{shortHash .Info.Commit}}">Permalink</a>{{end}}
+    </span>
+  </div>
+  {{if .Note}}<div class="note">{{.Note}} <a href="{{pageURL .NS.Name "raw" .Ref .Path}}">Download</a></div>
+  {{else if .Image}}<div class="image"><img src="{{pageURL .NS.Name "raw" .Info.Commit .Path}}" alt="{{base .Path}}"></div>
+  {{else if .Symlink}}<div class="note">Symbolic link to <code>{{.Symlink}}</code></div>
+  {{else if .Markdown}}<article class="markdown">{{.Markdown}}</article>
+  {{else if not .Lines}}<div class="note">This file is empty.</div>
+  {{else}}
+  <div class="scroll"><table class="code">
+    {{range $i, $l := .Lines}}<tr id="L{{add $i 1}}"><td class="num"><a href="#L{{add $i 1}}">{{add $i 1}}</a></td><td class="line">{{$l}}</td></tr>
+    {{end}}
+  </table></div>
+  {{end}}
+</div>
+{{end}}{{end}}

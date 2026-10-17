@@ -190,6 +190,13 @@ func (c *Client) Get(ctx context.Context, ns, ref, path string, opts *GetOptions
 	return resp.Body, fileInfo(resp, path), nil
 }
 
+// Open sends a file GET with the given request headers (Range, If-Range,
+// If-None-Match) and returns the response as is, for proxies that pass
+// on its status (200, 206 or 304) and headers. The caller closes the body.
+func (c *Client) Open(ctx context.Context, ns, ref, path string, hdr http.Header) (*http.Response, error) {
+	return c.request(ctx, http.MethodGet, "/ns/"+seg(ns)+"/files/"+seg(ref)+"/"+filePath(path), nil, hdr)
+}
+
 // Stat returns information about a file.
 func (c *Client) Stat(ctx context.Context, ns, ref, path string) (FileInfo, error) {
 	resp, err := c.request(ctx, http.MethodHead, "/ns/"+seg(ns)+"/files/"+seg(ref)+"/"+filePath(path), nil, nil)

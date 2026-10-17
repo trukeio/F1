@@ -1,0 +1,25 @@
+{{define "content"}}{{with .Data}}{{$p := .}}
+{{template "repohead" .}}
+{{with .Commit}}
+<div class="box commithead">
+  <h2>{{firstLine .Message}}</h2>
+  {{with rest .Message}}<pre class="body">{{.}}</pre>{{end}}
+  <div class="meta">
+    <span><strong>{{.Author.Name}}</strong> authored <span title="{{timestamp .Author.Time}}">{{date .Author.Time}}</span>{{if ne .Author.Name .Committer.Name}} · <strong>{{.Committer.Name}}</strong> committed{{end}}</span>
+    <span class="grow"></span>
+    {{range $i, $h := .Parents}}{{if eq $i 0}}<span class="muted">parent</span>{{else}},{{end}} <a class="mono" href="{{commitURL $p.NS.Name $h}}">{{shortHash $h}}</a>{{end}}
+    <span class="muted">commit</span> <span class="mono">{{shortHash .Hash}}</span>
+    <a class="btn" href="{{pageURL $p.NS.Name "tree" .Hash ""}}">Browse files</a>
+  </div>
+</div>
+{{else}}
+<form class="bar compare" method="get" action="/{{.NS.Name}}/compare">
+  <label>base <input type="text" name="base" value="{{.Base}}" list="refs" required></label>
+  <span class="muted">...</span>
+  <label>compare <input type="text" name="head" value="{{.Head}}" list="refs" required></label>
+  <button class="btn">Compare</button>
+  <datalist id="refs">{{range .Branches}}<option value="{{shortRef .Name}}">{{end}}{{range .Tags}}<option value="{{.Name}}">{{end}}</datalist>
+</form>
+{{end}}
+{{with .Diff}}{{template "diff" .}}{{end}}
+{{end}}{{end}}

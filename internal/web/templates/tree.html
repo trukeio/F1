@@ -1,0 +1,36 @@
+{{define "content"}}{{with .Data}}{{$p := .}}
+{{template "repohead" .}}
+{{if .Empty}}
+<div class="box"><p>This namespace is empty.</p></div>
+{{else}}
+<div class="bar">{{template "refpicker" .}}{{template "crumbs" .}}</div>
+<div class="box listing">
+  {{with .Last}}
+  <div class="lastcommit">
+    <strong>{{.Author.Name}}</strong>
+    <a class="grow ellipsis" href="{{commitURL $p.NS.Name .Hash}}">{{firstLine .Message}}</a>
+    <a class="mono muted" href="{{commitURL $p.NS.Name .Hash}}">{{shortHash .Hash}}</a>
+    <span class="muted" title="{{timestamp .Committer.Time}}">{{date .Committer.Time}}</span>
+    {{if $p.History}}<a href="{{pageURL $p.NS.Name "commits" $p.Ref $p.Path}}">History</a>{{end}}
+  </div>
+  {{end}}
+  <table class="entries">
+    {{if .Path}}<tr><td class="icon">{{template "icon-dir"}}</td><td><a href="{{pageURL .NS.Name "tree" .Ref (parent .Path)}}">..</a></td><td></td></tr>{{end}}
+    {{range .Entries}}
+    <tr>
+      <td class="icon">{{if .Dir}}{{template "icon-dir"}}{{else}}{{template "icon-file"}}{{end}}</td>
+      <td><a href="{{if .Dir}}{{pageURL $p.NS.Name "tree" $p.Ref .Path}}{{else}}{{pageURL $p.NS.Name "blob" $p.Ref .Path}}{{end}}">{{.Name}}</a></td>
+      <td class="size">{{if not .Dir}}{{size .Size}}{{end}}</td>
+    </tr>
+    {{end}}
+  </table>
+</div>
+{{if .Next}}<div class="pager"><a class="btn" href="?after={{.Next}}">Next page</a></div>{{end}}
+{{if .ReadmeName}}
+<div class="box readme">
+  <div class="filehead">{{template "icon-file"}} {{.ReadmeName}}</div>
+  {{if .ReadmeHTML}}<article class="markdown">{{.ReadmeHTML}}</article>{{else}}<pre class="plain">{{.ReadmeText}}</pre>{{end}}
+</div>
+{{end}}
+{{end}}
+{{end}}{{end}}

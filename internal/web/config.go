@@ -22,7 +22,7 @@ type Config struct {
 	Listen string `toml:"listen"`
 	// PublicURL is the URL browsers use to reach f1web, without a
 	// trailing slash, for example "https://f1.example.com". The OIDC
-	// redirect URI is PublicURL + "/auth/callback". An https URL makes
+	// redirect URI is PublicURL + "/-/auth/callback". An https URL makes
 	// the session cookie Secure.
 	PublicURL string `toml:"public_url"`
 	// F1URL is the URL of the F1 server's main listener.
@@ -33,6 +33,11 @@ type Config struct {
 	// TokenLogin lets users sign in by pasting an F1 token, as local
 	// users must. Default true.
 	TokenLogin bool `toml:"token_login"`
+	// MaxRender is the largest file, in bytes, that pages render
+	// (highlighted text, Markdown, diffs). Larger files are offered for
+	// download only; /raw streams files of any size (ADR-0018, item 12).
+	// Default 1 MiB.
+	MaxRender int64 `toml:"max_render"`
 	// OIDC configures sign-in through the identity provider; nil disables
 	// it.
 	OIDC *OIDCConfig `toml:"oidc"`
@@ -64,7 +69,7 @@ type Log struct {
 
 // DefaultConfig returns the defaults.
 func DefaultConfig() Config {
-	return Config{Listen: "127.0.0.1:8090", SessionIdle: "8h", TokenLogin: true,
+	return Config{Listen: "127.0.0.1:8090", SessionIdle: "8h", TokenLogin: true, MaxRender: 1 << 20,
 		Log: Log{Level: "info", Format: "text"}}
 }
 
@@ -100,6 +105,9 @@ func (c *Config) Validate() error {
 	}
 	if _, err := c.idle(); err != nil {
 		return err
+	}
+	if c.MaxRender <= 0 {
+		return fmt.Errorf("max_render must be positive, not %d", c.MaxRender)
 	}
 	if _, err := c.Log.slogLevel(); err != nil {
 		return err

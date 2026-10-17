@@ -1,6 +1,8 @@
 package web
 
 import (
+	"bytes"
+	"context"
 	"go/parser"
 	"go/token"
 	"path/filepath"
@@ -8,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/trukeio/f1/internal/client/textmerge"
 )
 
 func TestSafeNext(t *testing.T) {
@@ -144,5 +148,74 @@ func TestExampleConfig(t *testing.T) {
 	c, err := LoadConfig("../../deploy/f1web.toml")
 	if err != nil || c.OIDC == nil || c.OIDC.ClientID != "f1web" || !c.secure() {
 		t.Fatalf("deploy/f1web.toml: %+v, %v", c, err)
+	}
+}
+
+func TestParseUnified(t *testing.T) {
+	ctx := context.Background()
+	a := "one\ntwo\n-- three\nfour\nfive\nsix\nseven\neight\nnine\nten\n"
+	b := "one\ntwo\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\n"
+	var buf bytes.Buffer
+	if err := textmerge.Unified(ctx, textmerge.Bytes([]byte(a)), textmerge.Bytes([]byte(b)), "a", "b", &buf); err != nil {
+		t.Fatal(err)
+	}
+	var fd fileDiff
+	if err := parseUnified(&buf, &fd); err != nil {
+		t.Fatal(err)
+	}
+	if fd.Adds != 1 || fd.Dels != 1 || len(fd.Hunks) != 2 {
+		t.Fatalf("adds %d, dels %d, hunks %d:\n%s", fd.Adds, fd.Dels, len(fd.Hunks), buf.String())
+	}
+	// The deleted line starts with "--": it is a line, not a header.
+	del := fd.Hunks[0].Lines[2]
+	if del.Op != "del" || del.Text != "-- three" || del.Old != 3 || del.New != 0 {
+		t.Errorf("deleted line = %+v", del)
+	}
+	add := fd.Hunks[1].Lines[len(fd.Hunks[1].Lines)-1]
+	if add.Op != "add" || add.Text != "eleven" || add.New != 10 {
+		t.Errorf("added line = %+v", add)
+	}
+	ctxLine := fd.Hunks[1].Lines[0]
+	if ctxLine.Op != "ctx" || ctxLine.Old != 8 || ctxLine.New != 7 {
+		t.Errorf("context line = %+v", ctxLine)
+	}
+}
+
+func TestMarkdownLinks(t *testing.T) {
+	src := "[guide](guide.md#setup) [up](../README.md) [root](/LICENSE) [out](../../x) [web](https://example.com/) [here](#top)\n\n" +
+		"![logo](img/logo.png) <script>alert(1)</script> [js](javascript:alert(1))\n"
+	html, err := renderMarkdown([]byte(src), "proj", "tags/v1", "docs/index.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`href="/proj/blob/tags%2Fv1/docs/guide.md#setup"`,
+		`href="/proj/blob/tags%2Fv1/README.md"`,
+		`href="/proj/blob/tags%2Fv1/LICENSE"`,
+		`href="/proj/tree/tags%2Fv1"`,
+		`href="https://example.com/"`,
+		`href="#top"`,
+		`src="/proj/raw/tags%2Fv1/docs/img/logo.png"`,
+	} {
+		if !strings.Contains(string(html), want) {
+			t.Errorf("missing %s in\n%s", want, html)
+		}
+	}
+	if strings.Contains(string(html), "<script") || strings.Contains(string(html), "javascript:") {
+		t.Errorf("unsafe output:\n%s", html)
+	}
+}
+
+func TestRawType(t *testing.T) {
+	for _, c := range []struct{ stored, name, want string }{
+		{"image/png", "x", "image/png"},
+		{"application/octet-stream", "a.png", "image/png"},
+		{"", "a.svg", "image/svg+xml"},
+		{"text/html; charset=utf-8", "a.bin", "text/html"},
+		{"", "a.unknown-ext", "application/octet-stream"},
+	} {
+		if got := rawType(c.stored, c.name); got != c.want {
+			t.Errorf("rawType(%q, %q) = %q, want %q", c.stored, c.name, got, c.want)
+		}
 	}
 }
