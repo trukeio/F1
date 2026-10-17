@@ -14,6 +14,6 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - The user interface should look and work much like GitHub's.
   - Designed in ADR-0018: a separate server, `f1web`, signing users in with OIDC and calling the native API as them; read-only first.
   - [x] W0: ADR-0018; `log` pages with `skip`.
-  - [ ] W1: `cmd/f1web` skeleton, configuration, sign-in and sessions.
+  - [x] W1: `cmd/f1web` skeleton, configuration, sign-in and sessions.
   - [ ] W2: read-only pages (namespaces, tree, file, raw, history, commit, compare, branches, tags, locks).
   - [ ] W3: syntax highlighting, last commit per directory entry, keyboard shortcuts.

@@ -10,6 +10,7 @@ all: build
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/f1d ./cmd/f1d
 	go build -ldflags "$(LDFLAGS)" -o bin/f1 ./cmd/f1
+	go build -ldflags "$(LDFLAGS)" -o bin/f1web ./cmd/f1web
 
 # The race pass scales down large single-goroutine tests; the second pass
 # runs them at full size (the million-overwrite GC test takes minutes on CI

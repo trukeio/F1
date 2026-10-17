@@ -96,6 +96,19 @@ A namespace is a repository: a self-contained directory `repos/<ns>/`.
 - **S3:** AWS CLI, SDKs, rclone and mc, with path-style or virtual-host addressing.
 - **Git:** `git clone http://host:8080/git/<namespace>.git`, with any user name and the token as the password. LFS works against the same URL.
 
+## Web viewer
+
+`f1web` is a separate server that shows namespaces, files and history in a browser (ADR-0018). It calls the native API as the signed-in user, so users see exactly what their ACLs allow. `deploy/f1web.toml` is an example configuration.
+
+- **Run** `f1web --config f1web.toml` next to `f1d`, behind the same TLS-terminating proxy. With an `https` `public_url`, the session cookie is `Secure`.
+- **Sign-in with OIDC.** Register `f1web` at the identity provider as a confidential client with redirect URI `<public_url>/auth/callback`. Its access tokens must be accepted by F1, so they must carry F1's audience (`f1`):
+  - Keycloak: add an audience mapper for `f1` to the client;
+  - Entra ID: request the F1 API's scope (`api://f1/.default`), plus `offline_access` for refresh tokens.
+
+  `f1web` refreshes access tokens with the refresh token. Without one, the user signs in again when the access token expires.
+- **Sign-in with a token.** With `token_login = true`, users can paste an F1 token instead; local users have no other way.
+- **Sessions** are kept in memory and end after `session_idle` without a request, at sign-out, or when `f1web` restarts. Tokens stay in `f1web`; the browser holds only a session ID.
+
 ## Operations
 
 ### Backup and restore

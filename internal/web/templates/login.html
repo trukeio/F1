@@ -1,0 +1,20 @@
+{{define "content"}}
+<section class="box narrow">
+  <h1>Sign in to F1</h1>
+  {{if .Message}}<p class="flash">{{.Message}}</p>{{end}}
+  {{with .Data}}
+  {{if .OIDCName}}
+  <a class="btn primary wide" href="/login/oidc?next={{.Next}}">Sign in with {{.OIDCName}}</a>
+  {{end}}
+  {{if and .OIDCName .TokenLogin}}<p class="or">or</p>{{end}}
+  {{if .TokenLogin}}
+  <form method="post" action="/login/token">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <label for="token">F1 token</label>
+    <input id="token" name="token" type="password" autocomplete="off" required>
+    <button class="btn wide">Sign in with a token</button>
+  </form>
+  {{end}}
+  {{end}}
+</section>
+{{end}}

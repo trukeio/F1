@@ -1,0 +1,27 @@
+# f1web configuration: the web viewer of an F1 installation (ADR-0018).
+# Run: f1web --config /etc/f1/f1web.toml. See doc/admin.md, "Web viewer".
+
+# Behind a TLS-terminating reverse proxy, listen on localhost only.
+listen = "127.0.0.1:8090"
+# The URL browsers use. The OIDC redirect URI is public_url + "/auth/callback".
+public_url = "https://f1.example.com"
+# The F1 server's main listener.
+f1_url = "http://127.0.0.1:8080"
+# Sign users out after this long without a request.
+session_idle = "8h"
+# Let users sign in by pasting an F1 token (local users need it).
+token_login = true
+
+# Sign-in through the identity provider that F1 trusts. Remove to disable.
+[oidc]
+name = "Acme SSO"
+issuer = "https://login.example.com/realms/acme"
+client_id = "f1web"
+client_secret = "change-me"
+# Keycloak: ["openid"], with an audience mapper adding "f1" to the client's
+# access tokens. Entra ID: ["openid", "offline_access", "api://f1/.default"].
+scopes = ["openid"]
+
+[log]
+level = "info"
+format = "json"

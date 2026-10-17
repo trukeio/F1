@@ -1,5 +1,6 @@
 // Package oidctest is an in-process OIDC provider for tests: discovery, a
-// JWKS with rotatable keys, and token signing.
+// JWKS with rotatable keys, token signing, and the authorization code flow
+// with PKCE and refresh tokens for sign-in tests.
 package oidctest
 
 import (
@@ -8,9 +9,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -26,18 +31,44 @@ type Provider struct {
 	keys map[string]crypto.Signer
 	pub  jose.JSONWebKeySet
 	hits int
+
+	client  Client
+	codes   map[string]grant // authorization codes, each good once
+	refresh map[string]grant // refresh tokens, rotated at each use
+	nextID  int
+	issued  int // access tokens issued by the token endpoint
+}
+
+// Client is the registered client and the user who signs in at the
+// authorization endpoint (see SetClient).
+type Client struct {
+	ID, Secret string
+	// Subject, Groups and Audience go into issued access tokens, which
+	// expire after TTL.
+	Subject  string
+	Groups   []string
+	Audience string
+	TTL      time.Duration
+}
+
+// grant is what a code or refresh token stands for.
+type grant struct {
+	redirect, challenge string // codes only
 }
 
 // New starts a provider with one RS256 key, "rsa1".
 func New(t testing.TB) *Provider {
 	t.Helper()
-	p := &Provider{keys: map[string]crypto.Signer{}}
+	p := &Provider{keys: map[string]crypto.Signer{}, codes: map[string]grant{}, refresh: map[string]grant{}}
 	mux := http.NewServeMux()
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"issuer": p.srv.URL, "jwks_uri": p.srv.URL + "/keys"})
+		json.NewEncoder(w).Encode(map[string]string{"issuer": p.srv.URL, "jwks_uri": p.srv.URL + "/keys",
+			"authorization_endpoint": p.srv.URL + "/authorize", "token_endpoint": p.srv.URL + "/token"})
 	})
+	mux.HandleFunc("GET /authorize", p.authorize)
+	mux.HandleFunc("POST /token", p.token)
 	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -117,4 +148,107 @@ func (p *Provider) Token(t testing.TB, kid string, alg jose.SignatureAlgorithm, 
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// SetClient registers the client of the authorization code flow and the
+// user who signs in.
+func (p *Provider) SetClient(c Client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.client = c
+}
+
+// RevokeRefreshTokens makes every issued refresh token invalid.
+func (p *Provider) RevokeRefreshTokens() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refresh = map[string]grant{}
+}
+
+// Issued returns how many access tokens the token endpoint issued.
+func (p *Provider) Issued() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.issued
+}
+
+// authorize signs the configured user in at once and redirects back with
+// a code.
+func (p *Provider) authorize(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if q.Get("response_type") != "code" || q.Get("client_id") != p.client.ID || q.Get("code_challenge_method") != "S256" ||
+		q.Get("code_challenge") == "" || q.Get("redirect_uri") == "" {
+		http.Error(w, "invalid authorization request", http.StatusBadRequest)
+		return
+	}
+	code := p.newID("code")
+	p.codes[code] = grant{redirect: q.Get("redirect_uri"), challenge: q.Get("code_challenge")}
+	u := q.Get("redirect_uri") + "?" + url.Values{"code": {code}, "state": {q.Get("state")}}.Encode()
+	http.Redirect(w, r, u, http.StatusFound)
+}
+
+// token serves the authorization_code and refresh_token grants for a
+// confidential client (client_secret_basic).
+func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	refuse := func(code string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": code})
+	}
+	id, secret, ok := r.BasicAuth()
+	id, _ = url.QueryUnescape(id)
+	secret, _ = url.QueryUnescape(secret)
+	if !ok || id != p.client.ID || secret != p.client.Secret {
+		refuse("invalid_client")
+		return
+	}
+	switch r.FormValue("grant_type") {
+	case "authorization_code":
+		g, ok := p.codes[r.FormValue("code")]
+		delete(p.codes, r.FormValue("code"))
+		sum := sha256.Sum256([]byte(r.FormValue("code_verifier")))
+		if !ok || g.redirect != r.FormValue("redirect_uri") || base64.RawURLEncoding.EncodeToString(sum[:]) != g.challenge {
+			refuse("invalid_grant")
+			return
+		}
+	case "refresh_token":
+		if _, ok := p.refresh[r.FormValue("refresh_token")]; !ok {
+			refuse("invalid_grant")
+			return
+		}
+		delete(p.refresh, r.FormValue("refresh_token"))
+	default:
+		refuse("unsupported_grant_type")
+		return
+	}
+	c := p.client
+	exp := time.Now().Add(c.TTL)
+	claims := map[string]any{"iss": p.srv.URL, "aud": c.Audience, "sub": c.Subject, "groups": c.Groups,
+		"iat": time.Now().Unix(), "exp": exp.Unix()}
+	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: p.keys["rsa1"]}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "rsa1"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	access, err := jwt.Signed(sig).Claims(claims).Serialize()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rt := p.newID("refresh")
+	p.refresh[rt] = grant{}
+	p.issued++
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"access_token": access, "token_type": "Bearer",
+		"expires_in": int64(c.TTL / time.Second), "refresh_token": rt})
+}
+
+// newID returns a unique opaque value; p.mu must be held.
+func (p *Provider) newID(kind string) string {
+	p.nextID++
+	return fmt.Sprintf("%s-%d", kind, p.nextID)
 }

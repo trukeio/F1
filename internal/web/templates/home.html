@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>Namespaces</h1>
+{{if .Data}}
+<ul class="list">
+  {{range .Data}}
+  <li>
+    <a class="name" href="/{{.Name}}">{{.Name}}</a>
+    <span class="tag">{{.Config.Layout}}</span>
+    {{if .Config.Git}}<span class="tag">git</span>{{end}}
+    {{if .Frozen}}<span class="tag warn">frozen</span>{{end}}
+  </li>
+  {{end}}
+</ul>
+{{else}}
+<p class="muted">You have access to no namespace.</p>
+{{end}}
+{{end}}
