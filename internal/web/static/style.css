@@ -201,3 +201,21 @@ table.grid tr:first-child th { border-top: 0; background: var(--bg-subtle); }
 }
 table.diff tr.add, table.diff tr.del { color: var(--fg); }
 table.code, table.diff, pre { tab-size: 4; }
+
+/* W3: last commits, finder, shortcuts */
+table.entries td.lastmsg { max-width: 0; width: 50%; }
+table.entries td.lastmsg a { display: block; }
+table.entries td.lastdate { white-space: nowrap; text-align: right; }
+.finder { list-style: none; margin: 0; padding: 0; }
+.finder li { padding: 6px 16px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.finder li:first-child { border-top: 0; }
+.finder li.sel { background: var(--hunk-bg); }
+#finder-input { flex: 1; min-width: 200px; margin: 0; }
+dialog#keys { color: var(--fg); max-width: 420px; width: calc(100% - 32px); }
+dialog#keys::backdrop { background: rgba(0,0,0,.4); }
+dialog#keys h2 { font-size: 16px; margin: 0 0 12px; }
+dialog#keys table { margin-bottom: 12px; }
+kbd { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--bg-subtle); }
+@media (max-width: 640px) {
+  table.entries td.lastmsg, table.entries td.lastdate { display: none; }
+}

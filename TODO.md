@@ -16,4 +16,4 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] W0: ADR-0018; `log` pages with `skip`.
   - [x] W1: `cmd/f1web` skeleton, configuration, sign-in and sessions.
   - [x] W2: read-only pages (namespaces, tree, file, raw, history, commit, compare, branches, tags, locks).
-  - [ ] W3: syntax highlighting, last commit per directory entry, keyboard shortcuts.
+  - [x] W3: syntax highlighting, last commit per directory entry, keyboard shortcuts.

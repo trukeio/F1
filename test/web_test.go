@@ -257,13 +257,24 @@ func TestWebPages(t *testing.T) {
 	if strings.Index(body, "/proj/tree/main/src") > strings.Index(body, "/proj/blob/main/README.md") {
 		t.Error("directories are not listed first")
 	}
+	// W3: each entry's last commit, the shortcuts' data, highlighting.
+	if !strings.Contains(body, `href="/proj/commit/`+first+`" title="put x&lt;b&gt;.txt"`) {
+		t.Error("the root listing lacks the last commit of an entry")
+	}
+	if !strings.Contains(body, `data-finder="/proj/find/main"`) || !strings.Contains(body, `data-permalink="/proj/tree/`+c+`"`) {
+		t.Error("the root page lacks the shortcuts' data")
+	}
+	page("/proj/blob/main/src/main.go", `<span class="kn">package</span>`, `data-permalink="/proj/blob/`+c+`/src/main.go"`)
+	page("/proj/find/main", `<script id="finder-data" type="application/json" data-base="/proj/blob/main">`,
+		`"src/main.go"`, `"x\u003cb\u003e.txt"`)
+	page("/-/highlight.css", ".hl .k {", "@media (prefers-color-scheme: dark)")
 	page("/proj/tree/main/docs", "guide.md", `<strong>docs</strong>`)
 	page("/proj/tree/tags%2Fv1/src", "main.go", "tag:")
 	redirect("/proj/tree/main/src/main.go", "/proj/blob/main/src/main.go")
 	redirect("/proj/blob/main/docs", "/proj/tree/main/docs")
 
 	// Files.
-	page("/proj/blob/main/src/main.go", "5 lines", `println(&#34;new line&#34;)`, `href="/proj/blob/`+c+`/src/main.go"`, `id="L4"`)
+	page("/proj/blob/main/src/main.go", "5 lines", `<span class="s">&#34;new line&#34;</span>`, `href="/proj/blob/`+c+`/src/main.go"`, `id="L4"`)
 	page("/proj/blob/main/big.txt", "too large to display")
 	page("/proj/blob/main/logo.png", `<img src="/proj/raw/`+c+`/logo.png"`)
 	page("/proj/blob/main/README.md", `<h1 id="project">`, `href="?plain=1"`)
@@ -302,8 +313,8 @@ func TestWebPages(t *testing.T) {
 	page("/proj/commits/main", "put src/main.go", "put README.md", `href="/proj/commit/`+first+`"`)
 	page("/proj/commits/main/src/main.go", "History of")
 	redirect("/proj/commit/main", "/proj/commit/"+c)
-	page("/proj/commit/"+c, `class="del"`, `println(&#34;old line&#34;)`, `class="add"`, `println(&#34;new line&#34;)`, "1 addition", "1 deletion")
-	page("/proj/compare/feature...main", "src/main.go", `println(&#34;new line&#34;)`)
+	page("/proj/commit/"+c, `class="del"`, `<span class="s">&#34;old line&#34;</span>`, `class="add"`, `<span class="s">&#34;new line&#34;</span>`, "1 addition", "1 deletion")
+	page("/proj/compare/feature...main", "src/main.go", `<span class="s">&#34;new line&#34;</span>`)
 	redirect("/proj/compare?base=v1&head=main", "/proj/compare/v1...main")
 
 	// Refs and locks.

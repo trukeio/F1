@@ -1,0 +1,8 @@
+{{define "content"}}{{with .Data}}
+{{template "repohead" .}}
+<div class="bar">{{template "refpicker" .}}<input id="finder-input" type="text" placeholder="Type to find a file" autocomplete="off" autofocus></div>
+<div class="box listing"><ul id="finder-results" class="finder"></ul></div>
+{{if .Truncated}}<p class="muted">Only the first {{len .Paths}} files are searched.</p>{{end}}
+<script id="finder-data" type="application/json" data-base="{{pageURL .NS.Name "blob" .Ref ""}}">{{.Paths}}</script>
+<noscript><p class="muted">The file finder needs JavaScript.</p></noscript>
+{{end}}{{end}}

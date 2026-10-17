@@ -219,3 +219,30 @@ func TestRawType(t *testing.T) {
 		}
 	}
 }
+
+func TestHighlight(t *testing.T) {
+	for _, src := range []string{"package main", "package main\n\n/* a\nb */\nvar x = 1 < 2\n", "a\n\n\n"} {
+		text := strings.TrimSuffix(src, "\n")
+		hl := highlight("main.go", text)
+		if want := len(strings.Split(text, "\n")); len(hl) != want {
+			t.Errorf("%q: %d lines, want %d", src, len(hl), want)
+		}
+	}
+	hl := highlight("main.go", "/* a\nb */\nx := `<script>`")
+	if !strings.Contains(string(hl[1]), `class="cm"`) {
+		t.Errorf("the second line of a comment is not a comment: %s", hl[1])
+	}
+	if strings.Contains(string(hl[2]), "<script>") {
+		t.Errorf("unescaped: %s", hl[2])
+	}
+	if highlight("notes.unknown-extension", "x") != nil {
+		t.Error("highlighted a file no lexer knows")
+	}
+	if got := codeLines("a.unknown-extension", "<b>\nc"); len(got) != 2 || got[0] != "&lt;b&gt;" {
+		t.Errorf("plain lines = %q", got)
+	}
+	css := highlightCSS()
+	if !strings.Contains(css, ".hl .k {") || strings.Contains(css, "background") {
+		t.Errorf("CSS:\n%s", css)
+	}
+}

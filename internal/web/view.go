@@ -29,7 +29,13 @@ type repoView struct {
 	// View is the page the picker links to for another ref: tree, blob
 	// or commits.
 	View string
+	// Permalink is this page at the commit Ref points to, for the "y"
+	// shortcut; "" when Ref is a commit already.
+	Permalink string
 }
+
+// view returns the view; every namespace page embeds one.
+func (v *repoView) view() *repoView { return v }
 
 // History reports whether the namespace keeps history to browse.
 func (v *repoView) History() bool { return v.NS.Config.Retention != "none" }
@@ -209,18 +215,19 @@ type entry struct {
 	Dir        bool
 	Kind       string
 	Size       int64
+	Last       *f1client.Commit // the last commit that changed it, if known
 }
 
 // listDir lists a directory at a ref, directories first. It returns the
-// next page's After value, if any.
-func listDir(ctx context.Context, api *f1client.Client, ns, ref, dir, after string) ([]entry, string, error) {
+// commit listed and the next page's After value, if any.
+func listDir(ctx context.Context, api *f1client.Client, ns, ref, dir, after string) ([]entry, string, string, error) {
 	prefix := ""
 	if dir != "" {
 		prefix = dir + "/"
 	}
 	resp, err := api.List(ctx, ns, ref, prefix, &f1client.ListOptions{Delimiter: "/", After: after, Limit: listPage})
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	out := make([]entry, 0, len(resp.Items))
 	for _, it := range resp.Items {
@@ -228,7 +235,7 @@ func listDir(ctx context.Context, api *f1client.Client, ns, ref, dir, after stri
 		out = append(out, entry{Name: strings.TrimPrefix(p, prefix), Path: p, Dir: it.Prefix, Kind: it.Kind, Size: it.Size})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Dir && !out[j].Dir })
-	return out, resp.Next, nil
+	return out, resp.Commit, resp.Next, nil
 }
 
 // listPage is the number of entries per page of a directory.

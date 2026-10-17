@@ -17,7 +17,7 @@
   {{else if .Markdown}}<article class="markdown">{{.Markdown}}</article>
   {{else if not .Lines}}<div class="note">This file is empty.</div>
   {{else}}
-  <div class="scroll"><table class="code">
+  <div class="scroll"><table class="code hl">
     {{range $i, $l := .Lines}}<tr id="L{{add $i 1}}"><td class="num"><a href="#L{{add $i 1}}">{{add $i 1}}</a></td><td class="line">{{$l}}</td></tr>
     {{end}}
   </table></div>

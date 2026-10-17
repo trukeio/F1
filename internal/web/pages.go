@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"html/template"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/trukeio/f1/internal/client/textmerge"
 	"github.com/trukeio/f1/pkg/f1client"
@@ -34,13 +37,20 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{ns}/branches", s.page(s.refs))
 	mux.HandleFunc("GET /{ns}/tags", s.page(s.refs))
 	mux.HandleFunc("GET /{ns}/locks", s.page(s.locks))
+	mux.HandleFunc("GET /{ns}/find/{ref}", s.page(s.find))
 }
 
 // pathValue returns the path in a URL, without surrounding slashes.
 func pathValue(r *http.Request) string { return strings.Trim(r.PathValue("path"), "/") }
 
 func (s *Server) show(w http.ResponseWriter, r *http.Request, rq *request, name, title string, data any) error {
-	s.render(w, r, http.StatusOK, name, pageData{User: rq.sess.principal, Title: title, Data: data})
+	d := pageData{User: rq.sess.principal, Title: title, Data: data}
+	if v, ok := data.(interface{ view() *repoView }); ok {
+		rv := v.view()
+		d.Finder = pageURL(rv.NS.Name, "find", rv.Ref, "")
+		d.Permalink = rv.Permalink
+	}
+	s.render(w, r, http.StatusOK, name, d)
 	return nil
 }
 
@@ -83,7 +93,7 @@ func (s *Server) showTree(w http.ResponseWriter, r *http.Request, rq *request, v
 	if v.Path != "" {
 		title = v.Path + " at " + displayRef(v.Ref) + " · " + v.NS.Name
 	}
-	entries, next, err := listDir(ctx, rq.api, v.NS.Name, v.Ref, v.Path, r.URL.Query().Get("after"))
+	entries, commit, next, err := listDir(ctx, rq.api, v.NS.Name, v.Ref, v.Path, r.URL.Query().Get("after"))
 	if f1client.Code(err) == f1client.CodeNotFound && v.Path == "" && len(v.Branches)+len(v.Tags) == 0 {
 		p.Empty = true
 		return s.show(w, r, rq, "tree", title, p)
@@ -100,12 +110,16 @@ func (s *Server) showTree(w http.ResponseWriter, r *http.Request, rq *request, v
 		return nil
 	}
 	p.Entries, p.Next = entries, next
+	if !v.RefIsCommit() {
+		v.Permalink = pageURL(v.NS.Name, "tree", commit, v.Path)
+	}
 	if v.History() {
 		// Without whole-namespace read, the root's history is refused
 		// (D13); the page shows no last commit then.
-		if log, err := rq.api.LogPage(ctx, v.NS.Name, v.Ref, v.Path, 0, 1); err == nil && len(log) == 1 {
+		if log, err := rq.api.LogPage(ctx, v.NS.Name, commit, v.Path, 0, 1); err == nil && len(log) == 1 {
 			p.Last = &log[0]
 		}
+		lastCommits(ctx, rq.api, v.NS.Name, commit, entries)
 	}
 	if rd, ok := findReadme(entries); ok {
 		data, tooLarge, err := s.readFile(ctx, rq.api, v.NS.Name, v.Ref, rd.Path)
@@ -128,9 +142,9 @@ type blobPage struct {
 	*repoView
 	Info      f1client.FileInfo
 	Permalink string
-	Lines     []string      // text
-	Markdown  template.HTML // rendered Markdown
-	CanPlain  bool          // Markdown, which can also be shown as source
+	Lines     []template.HTML // text, highlighted if a lexer knows it
+	Markdown  template.HTML   // rendered Markdown
+	CanPlain  bool            // Markdown, which can also be shown as source
 	Image     bool
 	Symlink   string // target
 	Note      string // why the content is not shown
@@ -161,6 +175,9 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request, rq *request) error
 		return err
 	}
 	p := &blobPage{repoView: v, Info: info, Permalink: pageURL(v.NS.Name, "blob", info.Commit, v.Path)}
+	if !v.RefIsCommit() {
+		v.Permalink = p.Permalink
+	}
 	title := v.Path + " at " + displayRef(v.Ref) + " · " + v.NS.Name
 	switch {
 	case info.Kind == "gitlink":
@@ -194,9 +211,8 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request, rq *request) error
 			}
 		default:
 			p.CanPlain = isMarkdown(v.Path)
-			p.Lines = strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-			if len(data) == 0 {
-				p.Lines = nil
+			if len(data) > 0 {
+				p.Lines = codeLines(v.Path, strings.TrimSuffix(string(data), "\n"))
 			}
 		}
 	}
@@ -456,4 +472,96 @@ func (s *Server) locks(w http.ResponseWriter, r *http.Request, rq *request) erro
 		return err
 	}
 	return s.show(w, r, rq, "locks", "Locks · "+v.NS.Name, &locksPage{repoView: v, Locks: locks})
+}
+
+// codeLines returns the lines of a text file as HTML: highlighted if a
+// lexer knows the file, escaped otherwise.
+func codeLines(name, text string) []template.HTML {
+	if hl := highlight(name, text); hl != nil {
+		return hl
+	}
+	lines := strings.Split(text, "\n")
+	out := make([]template.HTML, len(lines))
+	for i, l := range lines {
+		out[i] = template.HTML(template.HTMLEscapeString(l))
+	}
+	return out
+}
+
+// Limits of the last-commit column of a directory listing.
+const (
+	entryLogMax     = 200 // entries looked up
+	entryLogWorkers = 8
+	entryLogTimeout = 3 * time.Second
+)
+
+// lastCommits fills in the last commit of each entry, a few queries at a
+// time. Entries not done within entryLogTimeout stay without one, so a
+// long history slows a page down only so much; F1 keeps the path filters
+// it computes (ADR-0015), so later visits are faster.
+func lastCommits(ctx context.Context, api *f1client.Client, ns, commit string, entries []entry) {
+	if len(entries) > entryLogMax {
+		entries = entries[:entryLogMax]
+	}
+	ctx, cancel := context.WithTimeout(ctx, entryLogTimeout)
+	defer cancel()
+	sem := make(chan struct{}, entryLogWorkers)
+	var wg sync.WaitGroup
+	for i := range entries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
+			if log, err := api.LogPage(ctx, ns, commit, entries[i].Path, 0, 1); err == nil && len(log) == 1 {
+				entries[i].Last = &log[0]
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// findMax bounds the files the file finder lists.
+const findMax = 20000
+
+// findPage lists every file at a ref, for the file finder ("t").
+type findPage struct {
+	*repoView
+	Paths     []string
+	Truncated bool // more than findMax files
+}
+
+func (s *Server) find(w http.ResponseWriter, r *http.Request, rq *request) error {
+	ctx := r.Context()
+	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), r.PathValue("ref"), "", "code")
+	if err != nil {
+		return err
+	}
+	v.View = "find"
+	if err := v.loadRefs(ctx, rq.api); err != nil {
+		return err
+	}
+	p := &findPage{repoView: v}
+	after := ""
+	for {
+		resp, err := rq.api.List(ctx, v.NS.Name, v.Ref, "", &f1client.ListOptions{After: after, Limit: 10000})
+		if err != nil {
+			return err
+		}
+		for _, it := range resp.Items {
+			p.Paths = append(p.Paths, it.Path)
+		}
+		if resp.Next == "" {
+			break
+		}
+		if len(p.Paths) >= findMax {
+			p.Truncated = true
+			break
+		}
+		after = resp.Next
+	}
+	return s.show(w, r, rq, "find", "Find a file · "+v.NS.Name, p)
 }

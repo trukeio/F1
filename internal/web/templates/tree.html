@@ -15,11 +15,13 @@
   </div>
   {{end}}
   <table class="entries">
-    {{if .Path}}<tr><td class="icon">{{template "icon-dir"}}</td><td><a href="{{pageURL .NS.Name "tree" .Ref (parent .Path)}}">..</a></td><td></td></tr>{{end}}
+    {{if .Path}}<tr><td class="icon">{{template "icon-dir"}}</td><td colspan="4"><a href="{{pageURL .NS.Name "tree" .Ref (parent .Path)}}">..</a></td></tr>{{end}}
     {{range .Entries}}
     <tr>
       <td class="icon">{{if .Dir}}{{template "icon-dir"}}{{else}}{{template "icon-file"}}{{end}}</td>
       <td><a href="{{if .Dir}}{{pageURL $p.NS.Name "tree" $p.Ref .Path}}{{else}}{{pageURL $p.NS.Name "blob" $p.Ref .Path}}{{end}}">{{.Name}}</a></td>
+      <td class="lastmsg">{{with .Last}}<a class="muted ellipsis" href="{{commitURL $p.NS.Name .Hash}}" title="{{firstLine .Message}}">{{firstLine .Message}}</a>{{end}}</td>
+      <td class="lastdate muted">{{with .Last}}<span title="{{timestamp .Committer.Time}}">{{date .Committer.Time}}</span>{{end}}</td>
       <td class="size">{{if not .Dir}}{{size .Size}}{{end}}</td>
     </tr>
     {{end}}

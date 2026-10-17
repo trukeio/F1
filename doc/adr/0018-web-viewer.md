@@ -74,6 +74,9 @@ Constraints:
     - **W1:** `cmd/f1web` skeleton, configuration, sign-in and sessions.
     - **W2:** the read-only pages of item 8.
     - **W3:** syntax highlighting, a "last commit" column in directory listings (one path `log` per entry, using ADR-0015's filters), keyboard shortcuts.
+      - Files and both sides of a diff are highlighted whole, so lines inside multi-line comments and strings are colored correctly. Tokens get CSS classes; `/-/highlight.css` holds GitHub's light and dark colors without backgrounds.
+      - The last-commit column looks up at most 200 entries, 8 at a time, and gives up after 3 s; entries not done by then show no commit. F1 keeps the path filters it computes, so later visits are faster.
+      - Shortcuts: `t` opens a file finder (`/{ns}/find/{ref}`, a fuzzy match over at most 20,000 paths, run in the browser), `y` replaces the URL with the page at its commit, `?` lists the shortcuts. Pages work without JavaScript; only the shortcuts and the finder need it.
 
     Changes beyond viewing (editing a file with `F1-Parent`, branches, locks) need CSRF protection and are a separate decision. Blame, search and anonymous browsing are deferred. Anonymous browsing depends on anonymous reads in F1, which are still open in `TODO.md`.
 

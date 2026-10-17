@@ -710,7 +710,7 @@ testdata/                golden vectors, Git fixture repositories
 | ULID | `github.com/oklog/ulid/v2` |
 | 3-way text merge | F1's own code, with bounded memory for any file size (ADR-0010) |
 | Markdown, web viewer only | `github.com/yuin/goldmark` (ADR-0018) |
-| Syntax highlighting, web viewer only | `github.com/alecthomas/chroma/v2` (ADR-0018) |
+| Syntax highlighting, web viewer only | `github.com/alecthomas/chroma/v2` (ADR-0018); it brings `github.com/dlclark/regexp2/v2` |
 
 Everything else uses the standard library (`net/http`, `log/slog`, `crypto/*`, `hash/crc32`).
 

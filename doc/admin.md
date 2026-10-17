@@ -108,6 +108,7 @@ A namespace is a repository: a self-contained directory `repos/<ns>/`.
   `f1web` refreshes access tokens with the refresh token. Without one, the user signs in again when the access token expires.
 - **Sign-in with a token.** With `token_login = true`, users can paste an F1 token instead; local users have no other way.
 - **Pages** follow GitHub's URLs: `/<namespace>`, `/<namespace>/tree/<ref>/<path>`, `blob`, `raw`, `commits`, `commit/<hash>`, `compare/<a>...<b>`, `branches`, `tags` and `locks`. A ref with `/` is written with `%2F` (`tags%2Fv1`). Files larger than `max_render` bytes (default 1 MiB) are offered for download instead of being displayed or diffed.
+- **Keyboard shortcuts:** `t` finds a file, `y` turns the URL into a permalink at the current commit, `?` lists the shortcuts.
 - **Sessions** are kept in memory and end after `session_idle` without a request, at sign-out, or when `f1web` restarts. Tokens stay in `f1web`; the browser holds only a session ID.
 
 ## Operations

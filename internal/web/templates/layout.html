@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · F1</title>
 <link rel="stylesheet" href="/-/static/style.css">
+<link rel="stylesheet" href="/-/highlight.css">
+<script src="/-/static/keys.js" defer></script>
 </head>
-<body>
+<body{{with .Finder}} data-finder="{{.}}"{{end}}{{with .Permalink}} data-permalink="{{.}}"{{end}}>
 <header class="top">
   <a class="brand" href="/">F1</a>
   {{if .User}}
@@ -19,6 +21,15 @@
 <main>
 {{template "content" .}}
 </main>
+<dialog id="keys" class="box">
+  <h2>Keyboard shortcuts</h2>
+  <table class="grid">
+    <tr><td><kbd>t</kbd></td><td>Find a file</td></tr>
+    <tr><td><kbd>y</kbd></td><td>Show this page at its commit (permalink)</td></tr>
+    <tr><td><kbd>?</kbd></td><td>Show these shortcuts</td></tr>
+  </table>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
 </body>
 </html>
 {{end}}

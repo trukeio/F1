@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"html/template"
 	"io"
 	"strings"
 
@@ -42,6 +43,7 @@ type diffLine struct {
 	Op       string // "add", "del" or "ctx"
 	Old, New int
 	Text     string
+	HTML     template.HTML // Text, highlighted or escaped
 }
 
 // diffPage is a commit or comparison: its changed files and their diffs.
@@ -138,7 +140,27 @@ func (s *Server) diffFile(ctx context.Context, api *f1client.Client, ns, a, b st
 	if err := textmerge.Unified(ctx, fa, fb, "a", "b", &buf); err != nil {
 		return err
 	}
-	return parseUnified(&buf, fd)
+	if err := parseUnified(&buf, fd); err != nil {
+		return err
+	}
+	// Each side is highlighted whole, so that a line inside a multi-line
+	// comment or string is colored as such.
+	hlOld := highlight(fd.Path, strings.TrimSuffix(string(old), "\n"))
+	hlNew := highlight(fd.Path, strings.TrimSuffix(string(cur), "\n"))
+	for i := range fd.Hunks {
+		for j := range fd.Hunks[i].Lines {
+			l := &fd.Hunks[i].Lines[j]
+			switch {
+			case l.Op == "add" && l.New <= len(hlNew):
+				l.HTML = hlNew[l.New-1]
+			case l.Op != "add" && l.Old <= len(hlOld):
+				l.HTML = hlOld[l.Old-1]
+			default:
+				l.HTML = template.HTML(template.HTMLEscapeString(l.Text))
+			}
+		}
+	}
+	return nil
 }
 
 // readFile reads a file at a ref, up to the render limit. Larger files are

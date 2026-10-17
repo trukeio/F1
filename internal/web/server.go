@@ -50,6 +50,10 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	static, _ := fs.Sub(assets, "static")
 	mux := http.NewServeMux()
 	mux.Handle("GET /-/static/", http.StripPrefix("/-/static/", http.FileServerFS(static)))
+	mux.HandleFunc("GET /-/highlight.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		fmt.Fprint(w, highlightCSS())
+	})
 	mux.HandleFunc("GET /-/healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	mux.HandleFunc("GET /-/login", s.loginPage)
 	mux.HandleFunc("GET /-/login/oidc", s.loginOIDC)
@@ -211,6 +215,9 @@ type pageData struct {
 	Title   string
 	Message string
 	Data    any // page-specific
+	// Keyboard shortcuts of namespace pages: the file finder ("t") and
+	// this page at its commit ("y").
+	Finder, Permalink string
 }
 
 // UserName is the principal without its "user:" prefix.

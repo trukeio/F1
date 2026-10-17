@@ -50,9 +50,9 @@
   {{if .Note}}<div class="note">{{.Note}}</div>
   {{else if not .Hunks}}<div class="note">No changes in the text.</div>
   {{else}}
-  <div class="scroll"><table class="diff">
+  <div class="scroll"><table class="diff hl">
     {{range .Hunks}}<tr class="hunk"><td class="num"></td><td class="num"></td><td class="line">{{.Header}}</td></tr>
-    {{range .Lines}}<tr class="{{.Op}}"><td class="num">{{if .Old}}{{.Old}}{{end}}</td><td class="num">{{if .New}}{{.New}}{{end}}</td><td class="line">{{if eq .Op "add"}}+{{else if eq .Op "del"}}-{{else}} {{end}}{{.Text}}</td></tr>{{end}}
+    {{range .Lines}}<tr class="{{.Op}}"><td class="num">{{if .Old}}{{.Old}}{{end}}</td><td class="num">{{if .New}}{{.New}}{{end}}</td><td class="line">{{if eq .Op "add"}}+{{else if eq .Op "del"}}-{{else}} {{end}}{{.HTML}}</td></tr>{{end}}
     {{end}}
   </table></div>
   {{if .Truncated}}<div class="note">The diff is too long; the rest is not shown.</div>{{end}}
