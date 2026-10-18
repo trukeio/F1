@@ -4,7 +4,7 @@
   {{if .Message}}<p class="flash">{{.Message}}</p>{{end}}
   {{with .Data}}
   {{if .OIDCName}}
-  <a class="btn primary wide" href="/-/login/oidc?next={{.Next}}">Sign in with {{.OIDCName}}</a>
+  <a class="btn primary wide" href="/-/login/oidc?next={{.Next}}{{if .Reauth}}&amp;reauth=1{{end}}">Sign in with {{.OIDCName}}</a>
   {{end}}
   {{if and .OIDCName .TokenLogin}}<p class="or">or</p>{{end}}
   {{if .TokenLogin}}

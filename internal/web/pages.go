@@ -69,7 +69,7 @@ type treePage struct {
 }
 
 func (s *Server) nsRoot(w http.ResponseWriter, r *http.Request, rq *request) error {
-	v, err := s.loadRepo(r.Context(), rq.api, r.PathValue("ns"), "", "", "code")
+	v, err := s.loadRepo(r.Context(), rq, r.PathValue("ns"), "", "", "code")
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func (s *Server) nsRoot(w http.ResponseWriter, r *http.Request, rq *request) err
 }
 
 func (s *Server) tree(w http.ResponseWriter, r *http.Request, rq *request) error {
-	v, err := s.loadRepo(r.Context(), rq.api, r.PathValue("ns"), r.PathValue("ref"), pathValue(r), "code")
+	v, err := s.loadRepo(r.Context(), rq, r.PathValue("ns"), r.PathValue("ref"), pathValue(r), "code")
 	if err != nil {
 		return err
 	}
@@ -157,7 +157,7 @@ type blobPage struct {
 
 func (s *Server) blob(w http.ResponseWriter, r *http.Request, rq *request) error {
 	ctx := r.Context()
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), r.PathValue("ref"), pathValue(r), "code")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), r.PathValue("ref"), pathValue(r), "code")
 	if err != nil {
 		return err
 	}
@@ -313,7 +313,7 @@ type commitDay struct {
 
 func (s *Server) commits(w http.ResponseWriter, r *http.Request, rq *request) error {
 	ctx := r.Context()
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), r.PathValue("ref"), pathValue(r), "commits")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), r.PathValue("ref"), pathValue(r), "commits")
 	if err != nil {
 		return err
 	}
@@ -360,7 +360,7 @@ type commitPage struct {
 
 func (s *Server) commit(w http.ResponseWriter, r *http.Request, rq *request) error {
 	ctx := r.Context()
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), r.PathValue("hash"), "", "commits")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), r.PathValue("hash"), "", "commits")
 	if err != nil {
 		return err
 	}
@@ -392,7 +392,7 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request, rq *request) err
 // compareForm picks two refs to compare.
 func (s *Server) compareForm(w http.ResponseWriter, r *http.Request, rq *request) error {
 	ctx := r.Context()
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), "", "", "commits")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), "", "", "commits")
 	if err != nil {
 		return err
 	}
@@ -420,7 +420,7 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request, rq *request) er
 	if !ok || base == "" || head == "" {
 		return errNotFound
 	}
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), "", "", "commits")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), "", "", "commits")
 	if err != nil {
 		return err
 	}
@@ -445,7 +445,7 @@ type refsPage struct {
 func (s *Server) refs(w http.ResponseWriter, r *http.Request, rq *request) error {
 	ctx := r.Context()
 	tab := path.Base(r.URL.Path) // branches or tags
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), "", "", tab)
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), "", "", tab)
 	if err != nil {
 		return err
 	}
@@ -468,7 +468,7 @@ type locksPage struct {
 
 func (s *Server) locks(w http.ResponseWriter, r *http.Request, rq *request) error {
 	ctx := r.Context()
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), "", "", "locks")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), "", "", "locks")
 	if err != nil {
 		return err
 	}
@@ -541,7 +541,7 @@ type findPage struct {
 
 func (s *Server) find(w http.ResponseWriter, r *http.Request, rq *request) error {
 	ctx := r.Context()
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), r.PathValue("ref"), "", "code")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), r.PathValue("ref"), "", "code")
 	if err != nil {
 		return err
 	}

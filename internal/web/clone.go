@@ -78,7 +78,7 @@ func (s *Server) archive(w http.ResponseWriter, r *http.Request, rq *request) er
 	if !ok || ref == "" {
 		return errNotFound
 	}
-	v, err := s.loadRepo(ctx, rq.api, r.PathValue("ns"), ref, "", "code")
+	v, err := s.loadRepo(ctx, rq, r.PathValue("ns"), ref, "", "code")
 	if err != nil {
 		return err
 	}

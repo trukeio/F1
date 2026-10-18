@@ -1,0 +1,59 @@
+{{define "content"}}{{$msg := .Message}}{{with .Data}}{{$p := .}}
+{{template "repohead" .}}
+<h1>Access</h1>
+<p class="muted">An entry grants permissions to a user or group on the paths that start with its prefix; an empty prefix is the whole namespace. For a path, the longest matching prefix decides, and the entries of a user and their groups at that prefix combine. An entry without permissions denies. Server administrators can do everything.</p>
+{{if $msg}}<p class="flash">{{$msg}}</p>{{end}}
+{{if .Entries}}
+<div class="box scroll listing">
+<table class="grid">
+  <tr><th>Prefix</th><th>Principal</th><th>Permissions</th><th></th></tr>
+  {{range .Entries}}
+  <tr>
+    <td class="mono">{{if .Prefix}}{{.Prefix}}{{else}}<span class="muted">(whole namespace)</span>{{end}}</td>
+    <td class="mono">{{.Principal}}{{if not .Known}} <span class="tag warn" title="F1 does not know this principal yet. OIDC users and groups become known when they first use F1; check the spelling otherwise.">unknown</span>{{end}}</td>
+    <td>{{range .Perms}}<span class="tag">{{.}}</span> {{else}}<span class="tag warn">denied</span>{{end}}</td>
+    <td class="actions">
+      <a class="btn" href="/{{$p.NS.Name}}/settings/access?principal={{.Principal}}&amp;prefix={{.Prefix}}#entry">Edit</a>
+      <a class="btn danger" href="/{{$p.NS.Name}}/settings/access/remove?principal={{.Principal}}&amp;prefix={{.Prefix}}">Remove</a>
+    </td>
+  </tr>
+  {{end}}
+</table>
+</div>
+{{else}}
+<p class="muted">The namespace has no entries: only server administrators can use it.</p>
+{{end}}
+
+<div class="columns">
+<form id="entry" method="post" action="/{{.NS.Name}}/settings/access" class="box form">
+  <h2>Add or change an entry</h2>
+  <label for="principal">User or group</label>
+  <input id="principal" name="principal" type="text" required placeholder="user:alice or group:eng" value="{{.Form.Principal}}" autocomplete="off" spellcheck="false">
+  <label for="prefix">Path prefix</label>
+  <input id="prefix" name="prefix" type="text" placeholder="empty for the whole namespace, or docs/" value="{{.Form.Prefix}}" autocomplete="off" spellcheck="false">
+  <fieldset class="perms">
+    <legend>Permissions</legend>
+    {{range .Perms}}<label class="check"><input type="checkbox" name="perm" value="{{.}}"{{if $p.Has .}} checked{{end}}> {{.}}</label>{{end}}
+    <p class="muted">None checked denies these paths. <code>admin</code> includes the others, and lets the principal change this page.</p>
+  </fieldset>
+  <button class="btn primary">Save entry</button>
+</form>
+
+<form method="get" action="/{{.NS.Name}}/settings/access#check" id="check" class="box form">
+  <h2>Check access</h2>
+  <label for="check-who">Principals</label>
+  <input id="check-who" name="check" type="text" required placeholder="user:alice, group:eng" value="{{with .Check}}{{.Principals}}{{end}}" autocomplete="off" spellcheck="false">
+  <label for="check-path">Path</label>
+  <input id="check-path" name="path" type="text" placeholder="docs/spec.md" value="{{with .Check}}{{.Path}}{{end}}" autocomplete="off" spellcheck="false">
+  <p class="muted">List a user and the groups they are in: F1 knows a user's groups, this page does not.</p>
+  <button class="btn">Check</button>
+  {{with .Check}}
+  <div class="result">
+    {{if .Perms}}<p>Allowed: {{range .Perms}}<span class="tag">{{.}}</span> {{end}}</p>{{else}}<p><span class="tag warn">denied</span></p>{{end}}
+    {{if .Deciding}}<p class="muted">Decided by the entries for prefix <code>{{with (index .Deciding 0).Prefix}}{{.}}{{else}}(whole namespace){{end}}</code>: {{range $i, $e := .Deciding}}{{if $i}}, {{end}}<code>{{$e.Principal}}</code>{{end}}.</p>
+    {{else}}<p class="muted">No entry applies, so access is denied.</p>{{end}}
+  </div>
+  {{end}}
+</form>
+</div>
+{{end}}{{end}}

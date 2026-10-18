@@ -213,6 +213,19 @@ type CreateTokenRequest struct {
 	Expires     time.Time `json:"expires"`
 }
 
+// ACLEntry grants Perms (read, write, lock, admin) on the paths of a
+// namespace that start with Prefix to Principal ("user:<name>" or
+// "group:<name>"). Empty Perms deny, overriding shorter prefixes.
+type ACLEntry struct {
+	Principal string   `json:"principal"`
+	Prefix    string   `json:"prefix"`
+	Perms     []string `json:"perms"`
+	// Known is set in listings: the principal is a user F1 knows, or a
+	// group with a member F1 knows. OIDC users become known when they
+	// first use F1.
+	Known bool `json:"known,omitempty"`
+}
+
 // Error is the body of every error response.
 type Error struct {
 	Code    string `json:"code"`
@@ -237,5 +250,6 @@ const (
 	CodeLocked          = "locked"          // path locked; Owner is set (empty: lock required)
 	CodeFrozen          = "frozen"          // repository frozen for copying
 	CodeParentRequired  = "parent_required" // F1-Parent header needed
+	CodeLastAdmin       = "last_admin"      // the server would have no enabled administrator
 	CodeInternal        = "internal"
 )

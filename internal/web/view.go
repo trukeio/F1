@@ -23,7 +23,9 @@ type repoView struct {
 	NS   f1client.Namespace
 	Ref  string // as in the URL: "main", "tags/v1" or a commit hash
 	Path string // file or directory; "" for the root
-	Tab  string // code, commits, branches, tags, locks
+	Tab  string // code, commits, branches, tags, locks, settings
+	// Admin: the user administers the namespace, so it has a Settings tab.
+	Admin bool
 	// Refs are loaded only for pages with a ref picker.
 	Branches, Tags []f1client.Ref
 	// View is the page the picker links to for another ref: tree, blob
@@ -66,8 +68,8 @@ type crumb struct {
 
 // loadRepo returns the view of namespace ns at ref. An empty ref is the
 // default ref.
-func (s *Server) loadRepo(ctx context.Context, api *f1client.Client, ns, ref, p, tab string) (*repoView, error) {
-	list, err := api.Namespaces(ctx)
+func (s *Server) loadRepo(ctx context.Context, rq *request, ns, ref, p, tab string) (*repoView, error) {
+	list, err := rq.api.Namespaces(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +78,7 @@ func (s *Server) loadRepo(ctx context.Context, api *f1client.Client, ns, ref, p,
 			if ref == "" {
 				ref = shortRef(n.Config.DefaultRef)
 			}
-			return &repoView{NS: n, Ref: ref, Path: p, Tab: tab}, nil
+			return &repoView{NS: n, Ref: ref, Path: p, Tab: tab, Admin: s.nsAdmin(ctx, rq, ns)}, nil
 		}
 	}
 	return nil, errNotFound // unknown, or not readable: the same to the user

@@ -454,6 +454,27 @@ func (c *Client) DeleteS3Key(ctx context.Context, accessKey string) error {
 	return c.do(ctx, http.MethodDelete, "/me/s3keys/"+seg(accessKey), nil, nil)
 }
 
+// ACL returns the ACL of namespace ns ("*": the server's), sorted by
+// prefix and principal. It needs admin at the namespace's root, or server
+// administration.
+func (c *Client) ACL(ctx context.Context, ns string) ([]ACLEntry, error) {
+	var out []ACLEntry
+	return out, c.do(ctx, http.MethodGet, "/ns/"+seg(ns)+"/acl", nil, &out)
+}
+
+// SetACL creates or replaces the entry of e's principal and prefix in
+// namespace ns.
+func (c *Client) SetACL(ctx context.Context, ns string, e ACLEntry) error {
+	e.Known = false
+	return c.do(ctx, http.MethodPut, "/ns/"+seg(ns)+"/acl", e, nil)
+}
+
+// DeleteACL removes the entry of principal and prefix from namespace ns.
+func (c *Client) DeleteACL(ctx context.Context, ns, principal, prefix string) error {
+	q := url.Values{"principal": {principal}, "prefix": {prefix}}
+	return c.do(ctx, http.MethodDelete, "/ns/"+seg(ns)+"/acl?"+q.Encode(), nil, nil)
+}
+
 // CreateToken creates a token for the caller. The secret is returned only
 // here.
 func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (Token, error) {

@@ -61,7 +61,7 @@ Several of the decisions below were discussed and rejected first: moving identit
    | `PUT /api/v1/ns/{ns}/acl` | set one entry: `{"principal", "prefix", "perms"}`; `perms` is a list; `[]` or `["none"]` denies |
    | `DELETE /api/v1/ns/{ns}/acl?principal=&prefix=` | remove one entry |
 
-   - Principals are written in full (`user:alice`, `group:eng`). Unknown principals are accepted, since OIDC users and groups appear only when they first sign in; the page warns.
+   - Principals are written in full (`user:alice`, `group:eng`). Unknown principals are accepted, since OIDC users and groups appear only when they first sign in; listings mark each entry `known` or not, and the page warns.
    - Others get 404 for a namespace they cannot see and 403 for one they can see but not administer, as for other operations.
    - A namespace administrator can grant `admin` in that namespace, but nothing on `*`.
 

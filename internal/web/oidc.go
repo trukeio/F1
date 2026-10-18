@@ -92,7 +92,7 @@ func pkceChallenge(verifier string) string {
 }
 
 // authURL returns the provider URL that starts a sign-in.
-func (o *oidcClient) authURL(ctx context.Context, state, verifier string) (string, error) {
+func (o *oidcClient) authURL(ctx context.Context, state, verifier string, reauth bool) (string, error) {
 	e, err := o.discover(ctx)
 	if err != nil {
 		return "", err
@@ -105,6 +105,12 @@ func (o *oidcClient) authURL(ctx context.Context, state, verifier string) (strin
 		"state":                 {state},
 		"code_challenge":        {pkceChallenge(verifier)},
 		"code_challenge_method": {"S256"},
+	}
+	if reauth {
+		// The provider asks the user again (with MFA if it requires it)
+		// instead of reusing its own session.
+		q.Set("max_age", "0")
+		q.Set("prompt", "login")
 	}
 	sep := "?"
 	if strings.Contains(e.Authorization, "?") {

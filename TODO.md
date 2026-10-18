@@ -23,7 +23,7 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] A0: ADR-0020.
   - [x] A1: self-service token API, groups for OIDC principals' tokens, `token_max_ttl`; tests of `f1web`'s CSRF protection.
   - [x] A2: `/-/settings` pages.
-  - [ ] A3: ACL API, guards, security events; namespace access page; recent sign-in.
+  - [x] A3: ACL API, guards, security events; namespace access page; recent sign-in.
   - [ ] A4: server administration API and `/-/admin` pages; manual.
 - [x] **Import Subversion repositories.** An importer that reads an `svnadmin dump` or `svnrdump` stream and writes one F1 commit per revision, keeping authors, dates and revision numbers, onto refs from the trunk/branches/tags layout (ADR-0017 recommends it). Converting to Git first suits code, not repositories of large binaries.
   - Designed in ADR-0019: `f1d repo import-svn`, run on the server host; dump formats 2 and 3; supported properties mapped, the rest reported; incremental imports until the switch.

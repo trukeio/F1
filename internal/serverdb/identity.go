@@ -26,6 +26,7 @@ var (
 	ErrPrincipalTaken = errors.New("serverdb: principal name belongs to another issuer")
 	ErrNoPrincipal    = errors.New("serverdb: no such principal")
 	ErrNoToken        = errors.New("serverdb: no such token")
+	ErrNoACLEntry     = errors.New("serverdb: no such ACL entry")
 )
 
 // Principal is a user known to the server.
@@ -398,9 +399,87 @@ const (
 // ServerNamespace is the ACL namespace for server-level operations.
 const ServerNamespace = "*"
 
+// execer is a *sql.DB or a *sql.Tx.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // SetACL creates or replaces an ACL entry. Empty perms deny: they override
 // grants of shorter prefixes.
-func (d *DB) SetACL(ctx context.Context, e ACLEntry) error {
+func (d *DB) SetACL(ctx context.Context, e ACLEntry) error { return setACL(ctx, d.db, e) }
+
+// RemoveACL removes an ACL entry.
+func (d *DB) RemoveACL(ctx context.Context, ns, principal, prefix string) error {
+	return removeACL(ctx, d.db, ns, principal, prefix)
+}
+
+// ErrLastAdmin is returned for a change that would leave the server
+// without an enabled administrator.
+var ErrLastAdmin = errors.New("serverdb: the server would have no enabled administrator")
+
+// SetACLGuarded is SetACL, refusing with ErrLastAdmin a change that leaves
+// the server without an enabled administrator (ADR-0020, item 7).
+func (d *DB) SetACLGuarded(ctx context.Context, e ACLEntry) error {
+	return d.tx(ctx, func(tx *sql.Tx) error {
+		if err := setACL(ctx, tx, e); err != nil {
+			return err
+		}
+		return guardAdmins(ctx, tx, e.Namespace)
+	})
+}
+
+// RemoveACLGuarded is RemoveACL with the guard of SetACLGuarded.
+func (d *DB) RemoveACLGuarded(ctx context.Context, ns, principal, prefix string) error {
+	return d.tx(ctx, func(tx *sql.Tx) error {
+		if err := removeACL(ctx, tx, ns, principal, prefix); err != nil {
+			return err
+		}
+		return guardAdmins(ctx, tx, ns)
+	})
+}
+
+// guardAdmins returns ErrLastAdmin if a change to namespace ns left the
+// server without an enabled administrator.
+func guardAdmins(ctx context.Context, tx *sql.Tx, ns string) error {
+	if ns != ServerNamespace {
+		return nil
+	}
+	n, err := adminCount(ctx, tx)
+	if err == nil && n == 0 {
+		err = ErrLastAdmin
+	}
+	return err
+}
+
+// adminCount counts the entries that make enabled principals server
+// administrators: admin on "*" at prefix "" for a known, enabled user, or
+// for a group with an enabled local member or an enabled external
+// principal whose last recorded groups include it.
+func adminCount(ctx context.Context, tx *sql.Tx) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM acl a
+		WHERE a.namespace = ? AND a.path_prefix = '' AND (',' || a.perms || ',') LIKE '%,admin,%' AND (
+			EXISTS (SELECT 1 FROM principals p WHERE p.name = a.principal AND p.disabled = 0)
+			OR EXISTS (SELECT 1 FROM memberships m JOIN principals p ON p.name = m.principal
+				WHERE m.group_name = a.principal AND p.disabled = 0)
+			OR EXISTS (SELECT 1 FROM principals p, json_each(p.groups) j
+				WHERE j.value = a.principal AND p.disabled = 0))`, ServerNamespace).Scan(&n)
+	return n, err
+}
+
+// Known reports whether a principal is known: a user that exists, or a
+// group with a local member or recorded for an external principal.
+// Disabled principals count, since an ACL may name them on purpose.
+func (d *DB) Known(ctx context.Context, principal string) (bool, error) {
+	var n int
+	err := d.queryRow(ctx, `SELECT EXISTS (SELECT 1 FROM principals WHERE name = ?)
+		OR EXISTS (SELECT 1 FROM memberships WHERE group_name = ?)
+		OR EXISTS (SELECT 1 FROM principals p, json_each(p.groups) j WHERE j.value = ?)`,
+		principal, principal, principal).Scan(&n)
+	return n != 0, err
+}
+
+func setACL(ctx context.Context, db execer, e ACLEntry) error {
 	if err := ValidPrincipal(e.Principal); err != nil {
 		return err
 	}
@@ -413,19 +492,18 @@ func (d *DB) SetACL(ctx context.Context, e ACLEntry) error {
 	}
 	perms := append([]string(nil), e.Perms...)
 	sort.Strings(perms)
-	_, err := d.db.ExecContext(ctx, `INSERT OR REPLACE INTO acl(namespace, principal, path_prefix, perms) VALUES (?, ?, ?, ?)`,
+	_, err := db.ExecContext(ctx, `INSERT OR REPLACE INTO acl(namespace, principal, path_prefix, perms) VALUES (?, ?, ?, ?)`,
 		e.Namespace, e.Principal, e.Prefix, strings.Join(perms, ","))
 	return err
 }
 
-// RemoveACL removes an ACL entry.
-func (d *DB) RemoveACL(ctx context.Context, ns, principal, prefix string) error {
-	res, err := d.db.ExecContext(ctx, `DELETE FROM acl WHERE namespace = ? AND principal = ? AND path_prefix = ?`, ns, principal, prefix)
+func removeACL(ctx context.Context, db execer, ns, principal, prefix string) error {
+	res, err := db.ExecContext(ctx, `DELETE FROM acl WHERE namespace = ? AND principal = ? AND path_prefix = ?`, ns, principal, prefix)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("serverdb: no ACL entry for %s %q in %s", principal, prefix, ns)
+		return fmt.Errorf("%w: %s %q in %s", ErrNoACLEntry, principal, prefix, ns)
 	}
 	return nil
 }

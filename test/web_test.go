@@ -171,6 +171,20 @@ func TestWebOIDCSignIn(t *testing.T) {
 	if status, _, _ = fetch(t, b, "GET", w+"/-/auth/callback?code=code-1&state=forged", nil, nil); status != 400 {
 		t.Errorf("forged callback: %d", status)
 	}
+
+	// Signing in again for administration makes the provider ask again
+	// (ADR-0020, item 12).
+	if _, _, body = fetch(t, b, "GET", w+"/-/login?reauth=1&next=%2Fproj%2Fsettings%2Faccess", nil, nil); !strings.Contains(body, "next=%2fproj%2fsettings%2faccess&amp;reauth=1") {
+		t.Errorf("re-authentication link:\n%s", body)
+	}
+	resp, err := noRedirect(b).Get(w + "/-/login/oidc?next=%2F&reauth=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if q := mustURL(t, resp.Header.Get("Location")).Query(); q.Get("max_age") != "0" || q.Get("prompt") != "login" {
+		t.Errorf("re-authentication request: %s", resp.Header.Get("Location"))
+	}
 }
 
 func mustURL(t *testing.T, s string) *url.URL {
@@ -495,5 +509,109 @@ func TestWebSettings(t *testing.T) {
 	}
 	if keys, _ = e.alice.S3Keys(ctx); len(keys) != 1 {
 		t.Errorf("S3 keys after revoking: %+v", keys)
+	}
+}
+
+// Namespace administrators manage access in f1web (ADR-0020, A3).
+func TestWebAccess(t *testing.T) {
+	e := start(t, envOpts{})
+	e.createNS(t, "proj", "")
+	e.setACL(t, "proj", "user:alice", "", "admin")
+	e.setACL(t, "proj", "user:bob", "", "read")
+	w := startWeb(t, e, nil)
+	signIn := func(user string) *http.Client {
+		b := browser(t)
+		if status, _, _ := fetch(t, b, "POST", w+"/-/login/token", url.Values{"token": {e.tokens[user]}, "next": {"/"}}, nil); status != 200 {
+			t.Fatalf("sign-in %s: %d", user, status)
+		}
+		return b
+	}
+	alice, bob := signIn("alice"), signIn("bob")
+
+	// Only administrators get the Settings tab and page.
+	if _, _, body := fetch(t, alice, "GET", w+"/proj", nil, nil); !strings.Contains(body, `href="/proj/settings/access"`) {
+		t.Error("alice has no Settings tab")
+	}
+	if _, _, body := fetch(t, bob, "GET", w+"/proj", nil, nil); strings.Contains(body, "/settings/access") {
+		t.Error("bob has a Settings tab")
+	}
+	if status, _, _ := fetch(t, bob, "GET", w+"/proj/settings/access", nil, nil); status != 403 {
+		t.Errorf("bob's access page: %d", status)
+	}
+
+	// Add, deny, list.
+	status, path, _ := fetch(t, alice, "POST", w+"/proj/settings/access", url.Values{"principal": {"group:eng"}, "prefix": {"docs/"}, "perm": {"write", "read"}}, nil)
+	if status != 200 || path != "/proj/settings/access" {
+		t.Fatalf("add entry: %d %s", status, path)
+	}
+	if _, _, body := fetch(t, alice, "POST", w+"/proj/settings/access", url.Values{"principal": {"user:bob"}, "prefix": {"docs/hr/"}}, nil); !strings.Contains(body, "denied") {
+		t.Errorf("deny entry not shown:\n%s", body)
+	}
+	acl, _ := e.admin.ACL(ctx, "proj")
+	var got []string
+	for _, x := range acl {
+		got = append(got, x.Principal+" "+x.Prefix+" "+strings.Join(x.Perms, ","))
+	}
+	if want := "user:alice  admin|user:bob  read|group:eng docs/ read,write|user:bob docs/hr/ "; strings.Join(got, "|") != want {
+		t.Errorf("ACL = %q, want %q", strings.Join(got, "|"), want)
+	}
+	status, _, body := fetch(t, alice, "POST", w+"/proj/settings/access", url.Values{"principal": {"bob"}, "perm": {"read"}}, nil)
+	if status != 400 || !strings.Contains(body, "F1 refused this") || !strings.Contains(body, `value="bob"`) {
+		t.Errorf("invalid principal: %d\n%s", status, body)
+	}
+
+	// Edit fills in the form; check access applies the rules.
+	if _, _, body = fetch(t, alice, "GET", w+"/proj/settings/access?principal=group:eng&prefix=docs/", nil, nil); !strings.Contains(body, `value="write" checked`) {
+		t.Error("Edit does not fill in the permissions")
+	}
+	q := url.Values{"check": {"user:bob, group:eng"}, "path": {"docs/a.md"}}
+	if _, _, body = fetch(t, alice, "GET", w+"/proj/settings/access?"+q.Encode(), nil, nil); !strings.Contains(body, `<span class="tag">write</span>`) || !strings.Contains(body, "<code>docs/</code>") {
+		t.Errorf("check docs/a.md:\n%s", body)
+	}
+	q.Set("path", "docs/hr/pay.md")
+	if _, _, body = fetch(t, alice, "GET", w+"/proj/settings/access?"+q.Encode(), nil, nil); strings.Contains(body, "Allowed:") || !strings.Contains(body, "prefix <code>docs/hr/</code>: <code>user:bob</code>") {
+		t.Errorf("check docs/hr/pay.md:\n%s", body)
+	}
+
+	// Remove, after confirming; cross-site changes are refused.
+	status, _, body = fetch(t, alice, "GET", w+"/proj/settings/access/remove?principal=group:eng&prefix=docs/", nil, nil)
+	if status != 200 || !strings.Contains(body, `name="principal" value="group:eng"`) {
+		t.Fatalf("confirm removal: %d\n%s", status, body)
+	}
+	form := url.Values{"principal": {"group:eng"}, "prefix": {"docs/"}}
+	if status, _, _ = fetch(t, alice, "POST", w+"/proj/settings/access/remove", form, http.Header{"Sec-Fetch-Site": {"cross-site"}}); status != 403 {
+		t.Errorf("cross-site removal: %d", status)
+	}
+	if status, path, _ = fetch(t, alice, "POST", w+"/proj/settings/access/remove", form, nil); status != 200 || path != "/proj/settings/access" {
+		t.Fatalf("remove: %d %s", status, path)
+	}
+	if acl, _ = e.admin.ACL(ctx, "proj"); len(acl) != 3 {
+		t.Errorf("ACL after removal: %+v", acl)
+	}
+	// Removing her own administration sends alice back to the namespace.
+	if _, path, _ = fetch(t, alice, "POST", w+"/proj/settings/access/remove", url.Values{"principal": {"user:alice"}, "prefix": {""}}, nil); path != "/proj" {
+		t.Errorf("after removing her own entry: %s", path)
+	}
+}
+
+// Changing access needs a recent sign-in (ADR-0020, item 12).
+func TestWebAccessRecentSignIn(t *testing.T) {
+	e := start(t, envOpts{})
+	e.createNS(t, "proj", "")
+	e.setACL(t, "proj", "user:alice", "", "admin")
+	w := startWeb(t, e, nil, func(c *web.Config) { c.AdminMaxAge = "1ns" })
+	b := browser(t)
+	fetch(t, b, "POST", w+"/-/login/token", url.Values{"token": {e.tokens["alice"]}, "next": {"/"}}, nil)
+
+	status, path, body := fetch(t, b, "GET", w+"/proj/settings/access", nil, nil)
+	if status != 200 || path != "/-/login?reauth=1&next=%2Fproj%2Fsettings%2Faccess" || !strings.Contains(body, "Sign in again") {
+		t.Fatalf("stale sign-in: %d %s", status, path)
+	}
+	status, path, _ = fetch(t, b, "POST", w+"/proj/settings/access", url.Values{"principal": {"user:bob"}, "perm": {"read"}}, nil)
+	if !strings.HasPrefix(path, "/-/login?reauth=1&next=%2Fproj%2Fsettings%2Faccess") {
+		t.Fatalf("stale sign-in, POST: %d %s", status, path)
+	}
+	if acl, _ := e.admin.ACL(ctx, "proj"); len(acl) != 1 {
+		t.Errorf("a change went through with a stale sign-in: %+v", acl)
 	}
 }

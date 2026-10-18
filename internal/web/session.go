@@ -12,7 +12,13 @@ import (
 type session struct {
 	id        string
 	principal string
+	signedIn  time.Time // for administration, which needs a recent sign-in
 	last      time.Time // last request; guarded by sessions.mu
+
+	// cacheMu guards admin, which remembers for a minute whether the user
+	// administers a namespace, to show its Settings tab.
+	cacheMu sync.Mutex
+	admin   map[string]adminCheck
 
 	// mu guards the tokens and serializes refreshes, which call the
 	// provider while holding it.
@@ -20,6 +26,11 @@ type session struct {
 	token   string    // F1 bearer token
 	refresh string    // OIDC refresh token; "" for none
 	expiry  time.Time // of token; zero for no expiry
+}
+
+type adminCheck struct {
+	ok bool
+	at time.Time
 }
 
 // tokens returns the current token and what is needed to refresh it.
@@ -62,7 +73,9 @@ func newID() string {
 }
 
 func (st *sessions) create(principal, token, refresh string, expiry time.Time) *session {
-	s := &session{id: newID(), principal: principal, token: token, refresh: refresh, expiry: expiry, last: st.now()}
+	now := st.now()
+	s := &session{id: newID(), principal: principal, token: token, refresh: refresh, expiry: expiry,
+		signedIn: now, last: now, admin: map[string]adminCheck{}}
 	st.mu.Lock()
 	st.byID[s.id] = s
 	st.mu.Unlock()

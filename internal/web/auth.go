@@ -59,21 +59,27 @@ func urlQueryEscape(s string) string { return url.QueryEscape(s) }
 // loginData is the sign-in page's data.
 type loginData struct {
 	Next       string
+	Reauth     bool   // signing in again for administration
 	OIDCName   string // "" without OIDC
 	TokenLogin bool
 }
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	next := safeNext(r.URL.Query().Get("next"))
-	if s.session(r) != nil {
+	reauth := r.URL.Query().Get("reauth") == "1"
+	if s.session(r) != nil && !reauth {
 		http.Redirect(w, r, next, http.StatusSeeOther)
 		return
 	}
-	s.renderLogin(w, r, http.StatusOK, next, "")
+	msg := ""
+	if reauth {
+		msg = "Sign in again to change access settings: your sign-in is older than " + s.cfg.AdminMaxAge + "."
+	}
+	s.renderLogin(w, r, http.StatusOK, next, msg)
 }
 
 func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, status int, next, msg string) {
-	d := loginData{Next: next, TokenLogin: s.cfg.TokenLogin}
+	d := loginData{Next: next, TokenLogin: s.cfg.TokenLogin, Reauth: r.URL.Query().Get("reauth") == "1"}
 	if s.oidc != nil {
 		d.OIDCName = s.oidc.cfg.Name
 	}
@@ -88,7 +94,7 @@ func (s *Server) loginOIDC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, verifier := newID(), newID()
-	u, err := s.oidc.authURL(r.Context(), state, verifier)
+	u, err := s.oidc.authURL(r.Context(), state, verifier, r.URL.Query().Get("reauth") == "1")
 	if err != nil {
 		s.log.Error("oidc sign-in failed", "err", err)
 		s.renderLogin(w, r, http.StatusBadGateway, next, "The identity provider cannot be reached. Try again later.")

@@ -1,13 +1,19 @@
 {{define "content"}}{{with .Data}}
+{{if .Repo}}{{template "repohead" .Repo}}{{template "confirmform" .}}
+{{else}}
 <div class="settings">
 {{template "settingsnav" .}}
-<section>
-  <form method="post" action="{{.Action}}" class="box form">
-    <h1>{{.Question}}</h1>
-    <p>{{.Detail}}</p>
-    <button class="btn danger">{{.Button}}</button>
-    <a class="btn" href="{{.Back}}">Cancel</a>
-  </form>
-</section>
+<section>{{template "confirmform" .}}</section>
 </div>
+{{end}}
 {{end}}{{end}}
+
+{{define "confirmform"}}
+<form method="post" action="{{.Action}}" class="box form">
+  {{range $k, $v := .Fields}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}
+  <h1>{{.Question}}</h1>
+  <p>{{.Detail}}</p>
+  <button class="btn danger">{{.Button}}</button>
+  <a class="btn" href="{{.Back}}">Cancel</a>
+</form>
+{{end}}

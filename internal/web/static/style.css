@@ -264,3 +264,11 @@ select { display: block; padding: 5px 8px; margin-bottom: 12px; font: inherit; c
 .secret p { margin: 0 0 10px; }
 .secret .copyline { margin-bottom: 8px; }
 .secret .copyline input[type=text] { margin: 0; }
+.columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; margin-top: 16px; align-items: start; }
+.columns .form { max-width: none; }
+.columns h2 { margin-top: 0; }
+fieldset.perms { border: 0; padding: 0; margin: 0 0 12px; }
+fieldset.perms legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
+label.check { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; margin-right: 16px; }
+fieldset.perms p { margin: 8px 0 0; font-size: 12px; }
+.result { margin-top: 12px; border-top: 1px solid var(--border); }

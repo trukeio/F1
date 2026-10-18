@@ -779,6 +779,7 @@ Paths below are relative to `/api/v1`.
 | `POST /ns/{ns}/commits` | commit uploaded objects: `{"ref", "parent", "changes", "message", "rebase"}` | whole-namespace read; write on the changed paths |
 | `POST /ns/{ns}/locks`, `GET /ns/{ns}/locks`, `DELETE /ns/{ns}/locks/{id}` | take, list and release locks | lock; `?force=true` needs admin |
 | `GET /ns/{ns}/archive` | the repository as a ZIP | admin |
+| `GET /ns/{ns}/acl`, `PUT /ns/{ns}/acl`, `DELETE /ns/{ns}/acl?principal=&prefix=` | read, set (`{"principal", "prefix", "perms"}`) and remove ACL entries; `{ns}` is `*` for the server's (§4.3) | admin at the root; server administrator for `*` |
 | `GET /me` | who you are, with your groups | |
 | `POST`, `GET /me/s3keys`, `DELETE /me/s3keys/{key}` | your S3 keys | |
 | `POST`, `GET /me/tokens`, `DELETE /me/tokens/{id}` | your tokens: `{"description", "expires"}` creates one (§4.3) | |
@@ -918,6 +919,7 @@ func main() {
 | 409 | `path_conflict` | a file is in the way of a directory, or the reverse | |
 | 409 | `exists` | the name is taken | |
 | 409 | `missing_objects` | a commit names objects that are not stored (collected meanwhile) | upload them and retry |
+| 409 | `last_admin` | the change would leave the server without an enabled administrator | grant another administrator first |
 | 423 | `locked` | the path is locked; `owner` is the holder, empty if you need to lock it yourself | lock, or wait |
 | 409 | `locked` | taking a lock that someone else holds | wait, or ask them |
 | 423 | `frozen` | the repository is frozen for a copy | retry later |
@@ -1093,6 +1095,17 @@ $ f1d acl rm design group:contractors "docs/"
 - **Hash-addressed access (D13).** Git, LFS, the native client and the native object endpoints address content by hash, not by path, so they need `read` on the whole namespace: prefix `""`, not narrowed by a longer prefix. Partial read access is for path-addressed reads: S3 and the native file, listing, history and diff endpoints.
 - **Writes** are checked on every changed path, through every protocol.
 - **Unknown or forbidden.** A namespace in which you have no permission answers 404, like one that does not exist.
+
+Namespace administrators manage their own namespace's ACL without `f1d`, through the API or on the namespace's Settings tab in `f1web`:
+
+```sh
+$ curl -X PUT -H "Authorization: Bearer $F1_TOKEN" -d '{"principal":"group:eng","prefix":"docs/","perms":["read","write"]}' \
+    http://f1.example.com:8080/api/v1/ns/design/acl
+$ curl -H "Authorization: Bearer $F1_TOKEN" http://f1.example.com:8080/api/v1/ns/design/acl
+[{"principal":"group:eng","prefix":"docs/","perms":["read","write"],"known":true}, …]
+```
+
+`"perms": ["none"]` or `[]` denies. `known` is false for a principal F1 has not seen: an OIDC user or group that has not used F1 yet, or a typo. A change that would leave the server without an enabled administrator is refused with `409 last_admin`; `f1d acl` on the server host is not checked and remains the way out. Changes through the API are logged as `security: admin change`.
 
 `f1d repo export-acl <ns> [file]` writes a namespace's ACL as TOML, and `f1d repo import-acl <ns> <file>` applies it on another server, skipping principals it does not know.
 

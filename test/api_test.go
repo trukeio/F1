@@ -445,6 +445,83 @@ func TestSelfServiceTokens(t *testing.T) {
 	put(t, f1client.New(e.url, ct.Secret), "proj", "c.txt", "c", first.Commit)
 }
 
+// Namespace and server administrators manage ACLs through the API
+// (ADR-0020, A3).
+func TestACLAPI(t *testing.T) {
+	e := start(t, envOpts{})
+	e.createNS(t, "proj", "")
+	e.setACL(t, "proj", "user:alice", "", "admin")
+	e.setACL(t, "proj", "user:bob", "docs/", "read")
+	e.createNS(t, "hidden", "")
+
+	// Who may read and change an ACL.
+	if _, err := e.bob.ACL(ctx, "proj"); f1client.Code(err) != f1client.CodeForbidden {
+		t.Errorf("bob reads proj's ACL: %v", err)
+	}
+	if _, err := e.alice.ACL(ctx, "hidden"); f1client.Code(err) != f1client.CodeNotFound {
+		t.Errorf("alice reads a namespace she cannot see: %v", err)
+	}
+	if _, err := e.alice.ACL(ctx, "*"); f1client.Code(err) != f1client.CodeForbidden {
+		t.Errorf("alice reads the server's ACL: %v", err)
+	}
+	if err := e.alice.SetACL(ctx, "*", f1client.ACLEntry{Principal: "user:alice", Perms: []string{"admin"}}); f1client.Code(err) != f1client.CodeForbidden {
+		t.Errorf("a namespace administrator makes herself server administrator: %v", err)
+	}
+
+	// Entries are set, listed sorted by prefix and principal, and removed.
+	for _, x := range []f1client.ACLEntry{
+		{Principal: "group:eng", Prefix: "", Perms: []string{"read", "write"}},
+		{Principal: "user:zed", Prefix: "docs/", Perms: []string{"read"}},
+		{Principal: "user:bob", Prefix: "docs/hr/", Perms: []string{"none"}},
+	} {
+		if err := e.alice.SetACL(ctx, "proj", x); err != nil {
+			t.Fatalf("set %+v: %v", x, err)
+		}
+	}
+	acl, err := e.alice.ACL(ctx, "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, x := range acl {
+		got = append(got, fmt.Sprintf("%q %s %s %v", x.Prefix, x.Principal, strings.Join(x.Perms, ","), x.Known))
+	}
+	want := []string{`"" group:eng read,write true`, `"" user:alice admin true`, `"docs/" user:bob read true`,
+		`"docs/" user:zed read false`, `"docs/hr/" user:bob  true`}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("ACL:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if err := e.alice.DeleteACL(ctx, "proj", "user:zed", "docs/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.alice.DeleteACL(ctx, "proj", "user:zed", "docs/"); f1client.Code(err) != f1client.CodeNotFound {
+		t.Errorf("remove a missing entry: %v", err)
+	}
+	for name, x := range map[string]f1client.ACLEntry{
+		"bad principal":  {Principal: "alice", Perms: []string{"read"}},
+		"bad permission": {Principal: "user:bob", Perms: []string{"delete"}},
+		"none and read":  {Principal: "user:bob", Perms: []string{"none", "read"}},
+	} {
+		if err := e.alice.SetACL(ctx, "proj", x); f1client.Code(err) != f1client.CodeBadRequest {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	// The last server administrator stays.
+	if err := e.admin.DeleteACL(ctx, "*", "user:admin", ""); f1client.Code(err) != f1client.CodeLastAdmin {
+		t.Fatalf("remove the last server administrator: %v", err)
+	}
+	if err := e.admin.SetACL(ctx, "*", f1client.ACLEntry{Principal: "user:alice", Perms: []string{"admin"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.admin.DeleteACL(ctx, "*", "user:admin", ""); err != nil {
+		t.Fatalf("remove one of two server administrators: %v", err)
+	}
+	if _, err := e.admin.ACL(ctx, "*"); f1client.Code(err) != f1client.CodeForbidden {
+		t.Errorf("a former server administrator reads the server's ACL: %v", err)
+	}
+}
+
 func TestNamespaceAdmin(t *testing.T) {
 	e := start(t, envOpts{})
 	if _, err := e.alice.CreateNamespace(ctx, f1client.CreateNamespaceRequest{Name: "x"}); f1client.Code(err) != f1client.CodeForbidden {

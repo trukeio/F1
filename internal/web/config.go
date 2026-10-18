@@ -36,6 +36,10 @@ type Config struct {
 	// SessionIdle signs a user out after this long without a request.
 	// Default "8h".
 	SessionIdle string `toml:"session_idle"`
+	// AdminMaxAge is how recent a sign-in must be to change a namespace's
+	// ACL or the server's administration; older sessions sign in again
+	// first (ADR-0020, item 12). Default "1h".
+	AdminMaxAge string `toml:"admin_max_age"`
 	// TokenLogin lets users sign in by pasting an F1 token, as local
 	// users must. Default true.
 	TokenLogin bool `toml:"token_login"`
@@ -75,7 +79,7 @@ type Log struct {
 
 // DefaultConfig returns the defaults.
 func DefaultConfig() Config {
-	return Config{Listen: "127.0.0.1:8090", SessionIdle: "8h", TokenLogin: true, MaxRender: 1 << 20,
+	return Config{Listen: "127.0.0.1:8090", SessionIdle: "8h", AdminMaxAge: "1h", TokenLogin: true, MaxRender: 1 << 20,
 		Log: Log{Level: "info", Format: "text"}}
 }
 
@@ -125,6 +129,9 @@ func (c *Config) Validate() error {
 	if _, err := c.idle(); err != nil {
 		return err
 	}
+	if _, err := c.adminMaxAge(); err != nil {
+		return err
+	}
 	if c.MaxRender <= 0 {
 		return fmt.Errorf("max_render must be positive, not %d", c.MaxRender)
 	}
@@ -158,6 +165,14 @@ func (c *Config) idle() (time.Duration, error) {
 	d, err := time.ParseDuration(c.SessionIdle)
 	if err != nil || d <= 0 {
 		return 0, fmt.Errorf("session_idle: invalid duration %q", c.SessionIdle)
+	}
+	return d, nil
+}
+
+func (c *Config) adminMaxAge() (time.Duration, error) {
+	d, err := time.ParseDuration(c.AdminMaxAge)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("admin_max_age: invalid duration %q", c.AdminMaxAge)
 	}
 	return d, nil
 }

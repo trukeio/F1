@@ -90,6 +90,9 @@ func (s *Server) Handler() http.Handler {
 	h("GET /api/v1/ns/{ns}/locks", s.listLocks)
 	h("DELETE /api/v1/ns/{ns}/locks/{id}", s.unlock)
 	h("GET /api/v1/ns/{ns}/archive", s.archive)
+	h("GET /api/v1/ns/{ns}/acl", s.getACL)
+	h("PUT /api/v1/ns/{ns}/acl", s.putACL)
+	h("DELETE /api/v1/ns/{ns}/acl", s.deleteACL)
 	return s.authenticate(mux)
 }
 

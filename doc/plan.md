@@ -403,6 +403,7 @@ JSON for metadata, raw bytes for content. Authentication: bearer token. Refs are
 | `GET /ns/{ns}/archive` | Stream the repository as a ZIP (admin) |
 | `GET /me`, `POST /me/s3keys`, `GET /me/s3keys`, `DELETE /me/s3keys/{key}` | The caller, and its S3 access keys |
 | `POST /me/tokens`, `GET /me/tokens`, `DELETE /me/tokens/{id}` | The caller's own tokens (ADR-0020) |
+| `GET`, `PUT`, `DELETE /ns/{ns}/acl` | A namespace's ACL (`*`: the server's), for its administrators (ADR-0020) |
 
 Objects are per repository (D6), so every object endpoint is under `/ns/{ns}`. The pack stream format used by the object endpoints is the pack file format without the requirement of being 64 MiB.
 

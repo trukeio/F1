@@ -14,6 +14,9 @@ f1_url = "http://127.0.0.1:8080"
 # s3_url = "https://s3.example.com"
 # Sign users out after this long without a request.
 session_idle = "8h"
+# Changing a namespace's access needs a sign-in no older than this; older
+# sessions sign in again first (with OIDC, the provider asks again).
+admin_max_age = "1h"
 # The largest file, in bytes, that pages render; larger ones are offered
 # for download.
 max_render = 1048576

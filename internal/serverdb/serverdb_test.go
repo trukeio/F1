@@ -62,3 +62,65 @@ func TestNewerSchemaRefused(t *testing.T) {
 		t.Fatalf("open of a newer schema: %v", err)
 	}
 }
+
+// Guarded ACL changes keep an enabled server administrator (ADR-0020).
+func TestLastAdminGuard(t *testing.T) {
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(db.AddUser(ctx, "user:root", nil))
+	must(db.AddUser(ctx, "user:alice", []string{"group:ops"}))
+	admin := func(p string) ACLEntry {
+		return ACLEntry{Namespace: ServerNamespace, Principal: p, Perms: []string{PermAdmin}}
+	}
+	must(db.SetACL(ctx, admin("user:root")))
+
+	// The only administrator cannot be removed or narrowed.
+	if err := db.RemoveACLGuarded(ctx, ServerNamespace, "user:root", ""); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("remove the last administrator: %v", err)
+	}
+	if err := db.SetACLGuarded(ctx, ACLEntry{Namespace: ServerNamespace, Principal: "user:root", Perms: []string{PermRead}}); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("narrow the last administrator: %v", err)
+	}
+	// An unknown user or a group without enabled members does not count.
+	must(db.SetACLGuarded(ctx, admin("user:ghost")))
+	must(db.SetACLGuarded(ctx, admin("group:empty")))
+	if err := db.RemoveACLGuarded(ctx, ServerNamespace, "user:root", ""); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("only unknown administrators left: %v", err)
+	}
+	// A group with an enabled local member counts, until it is disabled.
+	must(db.SetACLGuarded(ctx, admin("group:ops")))
+	must(db.SetDisabled(ctx, "user:alice", true))
+	if err := db.RemoveACLGuarded(ctx, ServerNamespace, "user:root", ""); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("group of a disabled user: %v", err)
+	}
+	must(db.SetDisabled(ctx, "user:alice", false))
+	// A group recorded for an external principal counts.
+	must(db.RemoveACLGuarded(ctx, ServerNamespace, "group:ops", ""))
+	if _, err := db.SeenExternal(ctx, "user:carol", "corp", []string{"group:admins"}); err != nil {
+		t.Fatal(err)
+	}
+	must(db.SetACLGuarded(ctx, admin("group:admins")))
+	must(db.RemoveACLGuarded(ctx, ServerNamespace, "user:root", ""))
+	// A refused change leaves the ACL as it was.
+	if err := db.RemoveACLGuarded(ctx, ServerNamespace, "group:admins", ""); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("remove the last group: %v", err)
+	}
+	if e, _ := db.ACL(ctx, ServerNamespace); len(e) != 3 {
+		t.Errorf("entries after a refused change: %+v", e)
+	}
+	// Other namespaces are not guarded.
+	must(db.SetACLGuarded(ctx, ACLEntry{Namespace: "ns", Principal: "user:alice", Perms: []string{PermAdmin}}))
+	must(db.RemoveACLGuarded(ctx, "ns", "user:alice", ""))
+	if err := db.RemoveACLGuarded(ctx, "ns", "user:alice", ""); !errors.Is(err, ErrNoACLEntry) {
+		t.Errorf("remove a missing entry: %v", err)
+	}
+}

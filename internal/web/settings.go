@@ -67,12 +67,14 @@ func secretBox(title string, lines ...string) map[string]any {
 
 // confirmPage asks before a destructive action (item 10).
 type confirmPage struct {
+	Repo     *repoView // a namespace's page; nil for the user's settings
 	Tab      string
 	Question string
 	Detail   string
 	Action   string // URL the form posts to
 	Button   string
 	Back     string
+	Fields   map[string]string // hidden fields of the form
 }
 
 func (s *Server) profile(w http.ResponseWriter, r *http.Request, rq *request) error {
@@ -183,7 +185,7 @@ func parseForm(w http.ResponseWriter, r *http.Request) error {
 // show on the form.
 func refused(err error) (string, bool) {
 	var ae *f1client.APIError
-	if errors.As(err, &ae) && ae.Error_.Code == f1client.CodeBadRequest {
+	if errors.As(err, &ae) && (ae.Error_.Code == f1client.CodeBadRequest || ae.Error_.Code == f1client.CodeLastAdmin) {
 		return "F1 refused this: " + ae.Error_.Message + ".", true
 	}
 	return "", false

@@ -63,6 +63,7 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /{$}", s.page(s.home))
 	s.routes(mux)
 	s.settingsRoutes(mux)
+	s.accessRoutes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusNotFound, "error", pageData{Title: "Not found", Message: "This page does not exist."})
 	})

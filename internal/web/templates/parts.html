@@ -11,6 +11,7 @@
     {{if .NS.Config.Branches}}<a href="/{{.NS.Name}}/branches"{{if eq .Tab "branches"}} class="sel"{{end}}>Branches</a>{{end}}
     <a href="/{{.NS.Name}}/tags"{{if eq .Tab "tags"}} class="sel"{{end}}>Tags</a>
     {{if .Locks}}<a href="/{{.NS.Name}}/locks"{{if eq .Tab "locks"}} class="sel"{{end}}>Locks</a>{{end}}
+    {{if .Admin}}<a href="/{{.NS.Name}}/settings/access"{{if eq .Tab "settings"}} class="sel"{{end}}>Settings</a>{{end}}
   </nav>
 </div>
 {{end}}
