@@ -228,7 +228,7 @@ func adminHandler(m *Manager, gcGrace time.Duration, log *slog.Logger) http.Hand
 		}
 		ns := r.PathValue("ns")
 		rp, err := m.Get(ns)
-		if err != nil {
+		if err != nil && !(req.DryRun && errors.Is(err, ErrNoRepo)) {
 			reply(w, nil, err)
 			return
 		}
@@ -242,8 +242,10 @@ func adminHandler(m *Manager, gcGrace time.Duration, log *slog.Logger) http.Hand
 		enc := json.NewEncoder(w)
 		last := time.Now()
 		rep, err := svnimport.Import(r.Context(), rp, r.Body, svnimport.Options{
-			Layout:  req.Layout,
-			Authors: req.Authors,
+			Layout:        req.Layout,
+			Authors:       req.Authors,
+			DryRun:        req.DryRun,
+			DefaultBranch: req.DefaultBranch,
 			Progress: func(rev int) {
 				if time.Since(last) >= time.Second {
 					last = time.Now()
@@ -256,7 +258,7 @@ func adminHandler(m *Manager, gcGrace time.Duration, log *slog.Logger) http.Hand
 		if err != nil {
 			line.Error = err.Error()
 			log.Warn("svn import failed", "namespace", ns, "err", err)
-		} else {
+		} else if !req.DryRun {
 			log.Info("svn import", "namespace", ns, "revisions", rep.Revisions, "commits", rep.Commits, "bytes", rep.Bytes)
 		}
 		enc.Encode(line)
@@ -269,6 +271,10 @@ func adminHandler(m *Manager, gcGrace time.Duration, log *slog.Logger) http.Hand
 type SVNImportRequest struct {
 	Layout  svnimport.Layout       `json:"layout"`
 	Authors map[string]repo.Person `json:"authors,omitempty"`
+	// DryRun writes nothing; the namespace may not exist yet, and then
+	// DefaultBranch names the default branch it would have.
+	DryRun        bool   `json:"dry_run,omitempty"`
+	DefaultBranch string `json:"default_branch,omitempty"`
 }
 
 // SVNImportLine is one line of an SVN import's response: progress, or at

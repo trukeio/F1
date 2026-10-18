@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/trukeio/f1/internal/config"
+	"github.com/trukeio/f1/internal/policy"
 	"github.com/trukeio/f1/internal/repo"
 	"github.com/trukeio/f1/internal/server"
 	"github.com/trukeio/f1/internal/svnimport"
@@ -23,6 +24,7 @@ type svnFlags struct {
 	authors string
 	layout  svnimport.Layout
 	create  string
+	dryRun  bool
 }
 
 // importSVN imports a Subversion dump into ns (ADR-0019), through the
@@ -30,6 +32,9 @@ type svnFlags struct {
 func importSVN(ctx context.Context, cfg config.Config, admin *server.AdminClient, running bool, ns, src string, f svnFlags, stdout, stderr io.Writer) error {
 	authors, err := readAuthors(f.authors)
 	if err != nil {
+		return err
+	}
+	if err := policy.ValidNamespace(ns); err != nil {
 		return err
 	}
 	var dump io.Reader = os.Stdin
@@ -41,41 +46,53 @@ func importSVN(ctx context.Context, cfg config.Config, admin *server.AdminClient
 		defer file.Close()
 		dump = file
 	}
+	// A dry run creates nothing; for a namespace still to be created it
+	// assumes the preset's default branch.
+	defaultBranch := ""
 	if f.create != "" {
-		if running {
-			err = admin.Create(ctx, ns, f.create)
-		} else {
-			err = createOffline(ctx, cfg, ns, f.create)
-		}
+		pc, err := policy.Preset(f.create)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "%s created\n", ns)
-	}
-	last := time.Now()
-	progress := func(rev int) {
-		if time.Since(last) >= time.Second {
-			last = time.Now()
-			fmt.Fprintf(stderr, "r%d\n", rev)
+		defaultBranch = strings.TrimPrefix(policy.FullRefName(pc.DefaultRef), "heads/")
+		if !f.dryRun {
+			if running {
+				err = admin.Create(ctx, ns, f.create)
+			} else {
+				err = createOffline(ctx, cfg, ns, f.create)
+			}
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "%s created\n", ns)
 		}
 	}
 	var rep *svnimport.Report
 	if running {
-		rep, err = admin.ImportSVN(ctx, ns, server.SVNImportRequest{Layout: f.layout, Authors: authors}, dump, func(rev int) {
-			fmt.Fprintf(stderr, "r%d\n", rev)
-		})
+		req := server.SVNImportRequest{Layout: f.layout, Authors: authors, DryRun: f.dryRun, DefaultBranch: defaultBranch}
+		rep, err = admin.ImportSVN(ctx, ns, req, dump, func(rev int) { fmt.Fprintf(stderr, "r%d\n", rev) })
 	} else {
-		rep, err = importSVNOffline(ctx, filepath.Join(cfg.Server.DataDir, server.ReposDir, ns), dump,
-			svnimport.Options{Layout: f.layout, Authors: authors, Progress: progress})
+		last := time.Now()
+		opts := svnimport.Options{Layout: f.layout, Authors: authors, DryRun: f.dryRun, DefaultBranch: defaultBranch,
+			Progress: func(rev int) {
+				if time.Since(last) >= time.Second {
+					last = time.Now()
+					fmt.Fprintf(stderr, "r%d\n", rev)
+				}
+			}}
+		rep, err = importSVNOffline(ctx, filepath.Join(cfg.Server.DataDir, server.ReposDir, ns), dump, opts)
 	}
 	if rep != nil && rep.Revisions > 0 {
-		printSVNReport(stdout, ns, rep)
+		printSVNReport(stdout, ns, rep, f.authors != "")
 	}
 	return err
 }
 
 func importSVNOffline(ctx context.Context, path string, dump io.Reader, opts svnimport.Options) (*svnimport.Report, error) {
 	if _, err := os.Stat(path); err != nil {
+		if opts.DryRun {
+			return svnimport.Import(ctx, nil, dump, opts)
+		}
 		return nil, fmt.Errorf("no namespace at %s (create it, or pass --create)", path)
 	}
 	rp, _, err := repo.Open(ctx, path, repo.Options{})
@@ -110,9 +127,21 @@ func readAuthors(file string) (map[string]repo.Person, error) {
 	return out, nil
 }
 
-func printSVNReport(w io.Writer, ns string, rep *svnimport.Report) {
-	fmt.Fprintf(w, "%s: imported to r%d: %d revisions, %d commits, %d bytes of content\n",
-		ns, rep.LastRevision, rep.Revisions, rep.Commits, rep.Bytes)
+func printSVNReport(w io.Writer, ns string, rep *svnimport.Report, authorsFile bool) {
+	what := "imported"
+	if rep.DryRun {
+		what = "dry run, nothing written: would import"
+	}
+	fmt.Fprintf(w, "%s: %s r%d–r%d (%d revisions)", ns, what, rep.FirstRevision, rep.LastRevision, rep.Revisions)
+	if rep.Continued > 0 {
+		fmt.Fprintf(w, ", continuing from r%d", rep.Continued)
+	}
+	unit := "of content"
+	if rep.DryRun {
+		unit = "of text in the dump"
+	}
+	fmt.Fprintf(w, ": %d commits, %d bytes %s\n", rep.Commits, rep.Bytes, unit)
+
 	paths := make([]string, 0, len(rep.Refs))
 	for p := range rep.Refs {
 		paths = append(paths, p)
@@ -130,14 +159,20 @@ func printSVNReport(w io.Writer, ns string, rep *svnimport.Report) {
 			fmt.Fprintf(w, "%s: %s\n", title, strings.Join(items, ", "))
 		}
 	}
+	list("renamed (not valid ref names)", mapItems(rep.Renamed))
 	list("deleted branches and tags, kept as", rep.Deleted)
 	list("tags changed after their creation", rep.TagChanges)
-	list("authors not in the authors file", rep.UnknownAuthors)
-	if len(rep.NeedsLock) > 0 {
-		fmt.Fprintf(w, "files with svn:needs-lock; suggested f1repo.toml setting: locks = \"required:%s\"\n", strings.Join(rep.NeedsLock, ","))
+	if authorsFile {
+		list("authors not in the authors file, written as user <user@uuid>", rep.UnknownAuthors)
+	} else {
+		list("authors, written as user <user@uuid> (map them with --authors)", rep.UnknownAuthors)
 	}
-	list("svn:externals (not imported) on", rep.Externals)
-	list("svn:ignore (not imported) on", rep.Ignores)
+	if len(rep.NeedsLock) > 0 {
+		fmt.Fprintf(w, "svn:needs-lock was set on files matching: %s; f1repo.toml can require locks with\n  locks = \"required:%s\"\n",
+			strings.Join(rep.NeedsLock, ", "), strings.Join(rep.NeedsLock, ","))
+	}
+	list("svn:externals, not imported, on", rep.Externals)
+	list("svn:ignore, not imported, on", rep.Ignores)
 	if len(rep.DroppedProps) > 0 {
 		var ds []string
 		for k, n := range rep.DroppedProps {
@@ -146,4 +181,16 @@ func printSVNReport(w io.Writer, ns string, rep *svnimport.Report) {
 		sort.Strings(ds)
 		list("properties not kept", ds)
 	}
+	if !rep.DryRun {
+		fmt.Fprintf(w, "to continue later: svnadmin dump --incremental -r %d:HEAD <repository> | f1d repo import-svn %s -\n", rep.LastRevision+1, ns)
+	}
+}
+
+func mapItems(m map[string]string) []string {
+	var out []string
+	for k, v := range m {
+		out = append(out, k+" → "+v)
+	}
+	sort.Strings(out)
+	return out
 }

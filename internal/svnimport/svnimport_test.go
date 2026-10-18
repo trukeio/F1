@@ -170,7 +170,7 @@ func TestImport(t *testing.T) {
 				t.Fatalf("progress %v, report %+v", progress, rep)
 			}
 			checkReport(t, rep)
-			wantRefs := map[string]bool{}
+			wantRefs := map[string]bool{MarkerRef: true}
 			for _, inc := range standardRefs {
 				wantRefs[inc.ref] = true
 			}
@@ -449,7 +449,7 @@ func TestImportErrors(t *testing.T) {
 	if _, err := Import(context.Background(), rp, bytes.NewReader(dump), Options{Layout: Layout{Root: true}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Import(context.Background(), rp, bytes.NewReader(dump), Options{Layout: Layout{Root: true}}); err == nil || !strings.Contains(err.Error(), "not empty") {
+	if _, err := Import(context.Background(), rp, bytes.NewReader(dump), Options{Layout: Layout{Root: true}}); err == nil || !strings.Contains(err.Error(), "must start at r2, not r0") {
 		t.Fatalf("second import: %v", err)
 	}
 }
@@ -520,4 +520,133 @@ func TestImportSpecialWithoutText(t *testing.T) {
 			t.Errorf("r%d: %q, want %q", rev, got, want)
 		}
 	}
+}
+
+// TestImportIncremental imports svntest.Standard in two parts, split after
+// every revision, and checks every revision of every branch and tag.
+func TestImportIncremental(t *testing.T) {
+	r, youngest := svntest.Standard(t)
+	dir := filepath.Dir(r.Dir)
+	for split := 1; split < youngest; split++ {
+		t.Run(fmt.Sprintf("r%d", split), func(t *testing.T) {
+			first := svntest.Run(t, dir, "svnadmin", "dump", "-q", "--deltas", "-r", fmt.Sprintf("0:%d", split), r.Dir)
+			second := svntest.Run(t, dir, "svnadmin", "dump", "-q", "--deltas", "--incremental", "-r", fmt.Sprintf("%d:HEAD", split+1), r.Dir)
+			if split%2 == 1 {
+				second = svntest.Run(t, dir, "svnrdump", "dump", "-q", "--incremental", "-r", fmt.Sprintf("%d:HEAD", split+1), r.URL)
+			}
+			rp := newRepo(t)
+			if _, err := Import(context.Background(), rp, bytes.NewReader(first), Options{}); err != nil {
+				t.Fatal(err)
+			}
+			rep, err := Import(context.Background(), rp, bytes.NewReader(second), Options{CheckpointRevisions: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rep.Continued != split || rep.FirstRevision != split+1 || rep.LastRevision != youngest {
+				t.Fatalf("report %+v", rep)
+			}
+			names := []string{MarkerRef}
+			for _, inc := range standardRefs {
+				names = append(names, inc.ref)
+			}
+			if got := slices.Sorted(maps.Keys(rp.Refs())); !slices.Equal(got, slices.Sorted(slices.Values(names))) {
+				t.Fatalf("refs %v", got)
+			}
+			for rev := 1; rev <= youngest; rev++ {
+				checkRevision(t, r, rp, rev, standardRefs)
+			}
+		})
+	}
+}
+
+func TestImportIncrementalRefusals(t *testing.T) {
+	a, _ := svntest.Standard(t)
+	b, _ := svntest.Standard(t)
+	dump := func(r *svntest.Repo, args ...string) []byte {
+		return svntest.Run(t, filepath.Dir(r.Dir), "svnadmin", append(append([]string{"dump", "-q"}, args...), r.Dir)...)
+	}
+	ctx := context.Background()
+	rp := newRepo(t)
+	if _, err := Import(ctx, rp, bytes.NewReader(dump(a, "-r", "0:3")), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(ctx, rp, bytes.NewReader(dump(b, "--incremental", "-r", "4:HEAD")), Options{}); err == nil || !strings.Contains(err.Error(), "the dump is of SVN repository") {
+		t.Errorf("another repository: %v", err)
+	}
+	if _, err := Import(ctx, rp, bytes.NewReader(dump(a, "--incremental", "-r", "5:HEAD")), Options{}); err == nil || !strings.Contains(err.Error(), "must start at r4, not r5") {
+		t.Errorf("a gap: %v", err)
+	}
+	commitFile(t, rp, "f1.txt")
+	if _, err := Import(ctx, rp, bytes.NewReader(dump(a, "--incremental", "-r", "4:HEAD")), Options{Layout: Layout{Trunk: "trunk", Branches: []string{"branches", "releases"}}}); err == nil || !strings.Contains(err.Error(), "pass the same") {
+		t.Errorf("another layout: %v", err)
+	}
+	if _, err := Import(ctx, rp, bytes.NewReader(dump(a, "--incremental", "-r", "4:HEAD")), Options{}); err == nil || !strings.Contains(err.Error(), "ref heads/main does not end in an imported SVN revision") {
+		t.Errorf("an F1 commit: %v", err)
+	}
+	if _, err := Import(ctx, newRepoWith(t, "f1.txt"), bytes.NewReader(dump(a, "--incremental", "-r", "4:HEAD")), Options{}); err == nil || !strings.Contains(err.Error(), "holds no SVN import") {
+		t.Errorf("a namespace with other content: %v", err)
+	}
+}
+
+// TestDryRun checks that a dry run writes nothing and reports what an
+// import reports.
+func TestDryRun(t *testing.T) {
+	r, youngest := svntest.Standard(t)
+	dir := filepath.Dir(r.Dir)
+	dump := svntest.Run(t, dir, "svnadmin", "dump", "-q", "--deltas", r.Dir)
+	ctx := context.Background()
+	authors := map[string]repo.Person{"alice": {Name: "Alice Example", Email: "alice@example.com"}}
+	real, err := Import(ctx, newRepo(t), bytes.NewReader(dump), Options{Authors: authors})
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := newRepo(t)
+	for name, rp := range map[string]*repo.Repo{"no namespace": nil, "empty namespace": empty} {
+		dry, err := Import(ctx, rp, bytes.NewReader(dump), Options{DryRun: true, Authors: authors})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !dry.DryRun || dry.LastRevision != youngest || dry.Commits != real.Commits || dry.Bytes == 0 {
+			t.Errorf("%s: dry run %+v, import %+v", name, dry, real)
+		}
+		checkReport(t, dry)
+	}
+	if len(empty.Refs()) != 0 {
+		t.Errorf("a dry run wrote refs %v", empty.Refs())
+	}
+
+	// A dry run of an incremental import.
+	rp := newRepo(t)
+	if _, err := Import(ctx, rp, bytes.NewReader(svntest.Run(t, dir, "svnadmin", "dump", "-q", "-r", "0:5", r.Dir)), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	before := rp.Refs()
+	dry, err := Import(ctx, rp, bytes.NewReader(svntest.Run(t, dir, "svnadmin", "dump", "-q", "--incremental", "-r", "6:HEAD", r.Dir)), Options{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Continued != 5 || dry.FirstRevision != 6 || !maps.Equal(rp.Refs(), before) {
+		t.Errorf("incremental dry run %+v, refs %v", dry, rp.Refs())
+	}
+}
+
+// commitFile commits a file to main, as an F1 user would.
+func commitFile(t *testing.T, rp *repo.Repo, path string) {
+	t.Helper()
+	ctx := context.Background()
+	main := rp.Ref("heads/main")
+	f, err := rp.Ingest(ctx, strings.NewReader("edited in F1\n"), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rp.Commit(ctx, repo.CommitRequest{Ref: "main", Parent: &main, Message: "an F1 edit",
+		Changes: []repo.Change{{Op: repo.OpPut, Path: path, Entry: object.Entry{Kind: object.KindFile, Target: f.File}}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newRepoWith(t *testing.T, path string) *repo.Repo {
+	rp := newRepo(t)
+	commitFile(t, rp, path)
+	return rp
 }

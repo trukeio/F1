@@ -43,12 +43,13 @@ func TestSvnImport(t *testing.T) {
 	out := runCLI(t, bin, "repo", "import-svn", "--config", cfg, "--create", "svn", "--authors", authors, "boards", dump)
 	for _, want := range []string{
 		"boards created",
-		fmt.Sprintf("boards: imported to r%d: %d revisions", youngest, youngest),
+		fmt.Sprintf("boards: imported r1–r%d (%d revisions)", youngest, youngest),
 		"trunk → heads/main",
 		"branches/my branch → heads/my-branch",
 		"heads/svn-deleted/x-r6",
-		"authors not in the authors file: bob",
+		"authors not in the authors file, written as user <user@uuid>: bob",
 		`locks = "required:*.brd"`,
+		fmt.Sprintf("svnadmin dump --incremental -r %d:HEAD", youngest+1),
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("offline import output lacks %q:\n%s", want, out)
@@ -80,7 +81,7 @@ func TestSvnImport(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("online import: %v\n%s%s", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), fmt.Sprintf("code: imported to r%d", youngest)) {
+	if !strings.Contains(stdout.String(), fmt.Sprintf("code: imported r1–r%d", youngest)) {
 		t.Fatalf("online import output:\n%s", stdout.String())
 	}
 
@@ -96,7 +97,7 @@ func TestSvnImport(t *testing.T) {
 			names = append(names, ref.Name)
 		}
 		slices.Sort(names)
-		want := []string{"heads/main", "heads/my-branch", "heads/sub-only", "heads/svn-deleted/sub-only-r11", "heads/svn-deleted/x-r6", "tags/v1"}
+		want := []string{"heads/main", "heads/my-branch", "heads/sub-only", "heads/svn-deleted/sub-only-r11", "heads/svn-deleted/x-r6", "notes/svn-import", "tags/v1"}
 		if !slices.Equal(names, want) {
 			t.Errorf("%s refs %v", ns, names)
 		}
@@ -135,10 +136,56 @@ func TestSvnImport(t *testing.T) {
 		}
 	}
 
-	// A second import into the same namespace is refused.
+	// A second import of the whole dump is refused: it does not continue
+	// the namespace.
 	cmd = exec.Command(bin, "repo", "import-svn", "--config", cfg, "code", dump)
-	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "not empty") {
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), fmt.Sprintf("must start at r%d, not r0", youngest+1)) {
 		t.Errorf("second import: %v\n%s", err, out)
+	}
+
+	// A dry run through the server creates nothing.
+	out = runCLI(t, bin, "repo", "import-svn", "--config", cfg, "--create", "svn", "--dry-run", "preview", dump)
+	if !strings.Contains(out, fmt.Sprintf("preview: dry run, nothing written: would import r1–r%d", youngest)) || strings.Contains(out, "created") {
+		t.Errorf("dry run output:\n%s", out)
+	}
+	if _, err := c.Refs(ctx, "preview"); f1client.Code(err) != f1client.CodeNotFound {
+		t.Errorf("after a dry run, namespace preview: %v", err)
+	}
+
+	// An import in two parts: the first through the server, the second
+	// continuing it from an incremental dump.
+	part := func(args ...string) string {
+		p := filepath.Join(dir, "part.dump")
+		os.WriteFile(p, svntest.Run(t, dir, "svnadmin", append(append([]string{"dump", "-q"}, args...), r.Dir)...), 0o600)
+		return p
+	}
+	runCLI(t, bin, "repo", "import-svn", "--config", cfg, "--create", "svn", "parts", part("-r", "0:6"))
+	out = runCLI(t, bin, "repo", "import-svn", "--config", cfg, "parts", part("--incremental", "-r", "7:HEAD"))
+	if !strings.Contains(out, fmt.Sprintf("parts: imported r7–r%d (%d revisions), continuing from r6", youngest, youngest-6)) {
+		t.Errorf("incremental import output:\n%s", out)
+	}
+	for _, ref := range []string{"main", "my-branch", "sub-only"} {
+		a, _ := c.Log(ctx, "boards", ref, "", 100)
+		b, err := c.Log(ctx, "parts", ref, "", 100)
+		if err != nil || len(a) != len(b) || a[0].Tree != b[0].Tree {
+			t.Errorf("%s differs after an import in two parts: %d and %d commits, %v", ref, len(a), len(b), err)
+		}
+	}
+
+	// The marker can be deleted when the migration is over.
+	refs, err := c.Refs(ctx, "parts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range refs {
+		if ref.Name == "notes/svn-import" {
+			if err := c.UpdateRef(ctx, "parts", ref.Name, ref.Commit, ""); err != nil {
+				t.Fatalf("delete the marker: %v", err)
+			}
+		}
+	}
+	if refs, _ := c.Refs(ctx, "parts"); len(refs) != 6 {
+		t.Errorf("refs after deleting the marker: %v", refs)
 	}
 }
 

@@ -3,6 +3,8 @@ package svnimport
 import (
 	"fmt"
 	"strings"
+
+	"github.com/trukeio/f1/internal/hash"
 )
 
 // The kinds of SVN paths.
@@ -21,6 +23,8 @@ type class struct {
 	trunk   bool
 	name    string // the branch or tag name as F1 will use it
 	renamed bool   // name differs from the SVN directory name
+
+	commit hash.Hash // for a copy source: the commit holding it
 }
 
 // refName returns the F1 ref of a branch or tag.

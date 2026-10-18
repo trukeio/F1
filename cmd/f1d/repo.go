@@ -30,7 +30,7 @@ Commands:
   import-svn <ns> <dump|->         import a Subversion dump (svnadmin dump,
          [--authors <file.toml>]   svnrdump dump; - reads standard input)
          [--trunk <path>] [--branches <path>]... [--tags <path>]... [--root]
-         [--create <preset>]
+         [--create <preset>] [--dry-run]
   attach <ns>                      register the directory repos/<ns>
   detach <ns>                      unregister a repository and leave its directory ready to move
   rebuild-cache <ns> | --dir <dir> rebuild cache.db (offline)
@@ -61,6 +61,7 @@ func repoCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Var((*multi)(&svn.layout.Tags), "tags", "import-svn: a directory of tags (default tags; repeatable)")
 	fs.BoolVar(&svn.layout.Root, "root", false, "import-svn: import the whole repository as the default branch")
 	fs.StringVar(&svn.create, "create", "", "import-svn: create the namespace with this preset (svn, git, ...)")
+	fs.BoolVar(&svn.dryRun, "dry-run", false, "import-svn: read and map the dump, write nothing, and report")
 	if err := parseFlags(fs, args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0

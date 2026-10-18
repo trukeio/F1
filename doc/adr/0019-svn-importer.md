@@ -41,7 +41,7 @@ f1d repo import-svn <ns> <dump|-> [--authors <file>] [--trunk <path>] [--branche
 - With a running server it streams the dump through the admin socket, as the other `repo` commands do. Otherwise it opens the data directory directly.
 - The namespace must exist and be empty, unless `--create <preset>` creates it (usually `svn`, or `git` for code). A namespace already imported from the same SVN repository continues an incremental import (below).
 - It needs `layout = tree`. With retention other than `all` it warns, because GC would then remove imported history.
-- `--dry-run` parses and maps the whole dump and prints the report without writing.
+- `--dry-run` reads and maps the whole dump, writes nothing, and prints the report (below).
 
 ### Dump reading
 
@@ -91,7 +91,7 @@ f1d repo import-svn <ns> <dump|-> [--authors <file>] [--trunk <path>] [--branche
   SVN-UUID: 0f6c6f2e-…
   ```
 
-  The trailers make the import resumable and let users find a commit by its old revision number.
+  The trailers let users find a commit by its old revision number, and let an incremental import walk the history of earlier imports.
 
 ### Properties
 
@@ -110,12 +110,30 @@ f1d repo import-svn <ns> <dump|-> [--authors <file>] [--trunk <path>] [--branche
 
 ### Incremental imports
 
-- A repeated import into a namespace imported from the same `SVN-UUID` continues with revision N+1, where N is the highest `SVN-Revision` found:
+- **The marker.** Every checkpoint also moves the ref `notes/svn-import`, in the same atomic update. It points at a commit with an empty tree whose message records the last revision imported, the repository UUID and the layout (`SVN-Revision`, `SVN-UUID`, `SVN-Layout`).
+  - The marker is exact even when the last revisions wrote no commit: a tag made by a plain copy, a branch deletion, or a property change on the root.
+  - The web viewer and the native client list only `heads/` and `tags/`, so the marker does not appear there. It can be deleted when the migration is over.
+- **Continuing.** An import into a namespace that holds a marker continues with revision N+1, where N is the marker's revision:
   - `svnadmin dump -r N+1:HEAD --incremental`
   - `svnrdump dump -r N+1:HEAD --incremental`
-- A dump that starts at any other revision is refused.
-- **The revision map** (revision to commit per ref) is rebuilt when the import starts, by walking the history of every ref and reading the trailers. Deleted branches are kept as refs for this reason. It is held in memory: about 50 bytes per revision and ref.
-- **Ref moves.** Every ref update is a compare-and-swap. If a user pushed to an imported branch in the meantime, the import stops at that revision and names the ref. Teams import incrementally until the switch, then stop committing to SVN.
+- **Refused:**
+  - a dump that starts at any other revision;
+  - a dump of another repository (UUID);
+  - other layout options than the marker records;
+  - a ref whose last commit has no `SVN-Revision`: a commit made in F1 since the import;
+  - a non-empty namespace without a marker.
+- **No state is stored besides the marker.** The importer finds the ref of an SVN path by the name the layout gives it, when a node first touches it.
+  - A copy from a revision of an earlier import walks that ref's first-parent history and reads the trailers.
+  - A branch deleted after the source revision is found under `svn-deleted/`, whose names carry the deleting revision. Deleted branches are kept as refs for this reason too.
+- **Not supported:** deleting a whole layout directory (`branches/`) in an incremental import. The importer would have to list every branch under it, which the layout's names cannot map back to SVN paths.
+- **Ref moves.** Every ref update is a compare-and-swap. If a user pushes to an imported branch while an import runs, the import stops and names the ref. Teams import incrementally until the switch, then stop committing to SVN.
+
+### Dry runs
+
+`--dry-run` reads the whole dump and maps it without ingesting content or writing a commit or ref.
+- The namespace may not exist yet. With `--create`, the dry run assumes that preset's default branch.
+- It works on a namespace an earlier import filled, to check that a dump continues it.
+- Its commit count assumes every revision that touches a branch changes it. Its byte count is the size of the texts in the dump, which for deltas is less than the content.
 
 ### Report
 
@@ -157,7 +175,8 @@ At the end, and with `--dry-run`, the importer prints:
 - **Decision (2026-10-18, the user): accepted.** Deleted branches and tags are kept as refs under `svn-deleted/`, and the importer is a server command only; an import capability in the native API is not planned.
 - SVN repositories move to F1 with their full history, authors, dates and revision numbers, into any kind of namespace. An imported `git` namespace gets ordinary Git commits, so this is also a path from SVN to Git hosting.
 - The importer runs on the server host as the server's user. Teams without access to the host ask an administrator, who can import from a remote SVN server with `svnrdump`.
-- No change to the on-disk format, the native API or the Git layer. The trailers are ordinary message text.
+- No change to the on-disk format, the native API or the Git layer. The trailers are ordinary message text, and the marker an ordinary ref. Git clients see the marker in `git ls-remote` as `refs/notes/svn-import`, but do not fetch it by default.
+- A revision that only copies a whole branch, such as tagging trunk, writes no commit, so its log message and author are not kept: the tag points at the source's commit.
 - Estimated size: 3,000 lines with tests, mostly the dump reader, svndiff and the mapping. No new dependency.
 - Copy history and merge tracking are lost, as in every SVN-to-Git converter. `blame` and `log` stop at an `svn mv`.
 - Dropped properties (`svn:eol-style`, `svn:keywords`, user properties) cannot be recovered from F1 later. The source repository, or its dump, should be kept.

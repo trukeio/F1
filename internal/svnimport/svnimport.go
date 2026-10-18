@@ -51,15 +51,24 @@ type Options struct {
 	CheckpointBytes     int64
 	// Progress, if set, is called after each revision.
 	Progress func(rev int)
+	// DryRun reads and maps the dump without writing anything: no content
+	// is ingested and no commit or ref is written. The repository may be
+	// nil, for a namespace that does not exist yet; DefaultBranch then
+	// names its default branch (default "main").
+	DryRun        bool
+	DefaultBranch string
 }
 
 // Report describes an import.
 type Report struct {
 	UUID           string            `json:"uuid"`
-	Revisions      int               `json:"revisions"`     // revisions read, revision 0 excluded
-	LastRevision   int               `json:"last_revision"` // the last revision read
+	DryRun         bool              `json:"dry_run,omitempty"`
+	Continued      int               `json:"continued,omitempty"` // for an incremental import, the revision it continued from
+	Revisions      int               `json:"revisions"`           // revisions read, revision 0 excluded
+	FirstRevision  int               `json:"first_revision"`
+	LastRevision   int               `json:"last_revision"`
 	Commits        int               `json:"commits"`
-	Bytes          int64             `json:"bytes"`             // file content ingested
+	Bytes          int64             `json:"bytes"`             // file content ingested; for a dry run, the texts in the dump
 	Refs           map[string]string `json:"refs"`              // SVN path → ref, for live refs
 	Renamed        map[string]string `json:"renamed,omitempty"` // SVN path → ref, where the name had to change
 	Deleted        []string          `json:"deleted,omitempty"` // refs kept under svn-deleted/
@@ -74,14 +83,17 @@ type Report struct {
 // maxSymlink bounds the text of an svn:special file ("link <target>").
 const maxSymlink = 64 << 10
 
-// Import reads a dump and writes its revisions to rp, which must be an
-// empty namespace with layout tree.
+// Import reads a dump and writes its revisions to rp, a namespace with
+// layout tree. An empty namespace gets the whole dump. A namespace that
+// earlier imports from the same SVN repository filled continues where they
+// ended: the dump must start at the next revision (svnadmin dump -r N:HEAD
+// --incremental) and use the same layout options.
 func Import(ctx context.Context, rp *repo.Repo, dump io.Reader, opts Options) (*Report, error) {
-	if rp.Meta().Layout != policy.LayoutTree {
-		return nil, errors.New("svnimport: the namespace needs layout = tree")
+	if rp == nil && !opts.DryRun {
+		return nil, errors.New("svnimport: no repository")
 	}
-	if len(rp.Refs()) > 0 {
-		return nil, errors.New("svnimport: the namespace is not empty")
+	if rp != nil && rp.Meta().Layout != policy.LayoutTree {
+		return nil, errors.New("svnimport: the namespace needs layout = tree")
 	}
 	lay, err := newLayout(opts.Layout)
 	if err != nil {
@@ -100,19 +112,33 @@ func Import(ctx context.Context, rp *repo.Repo, dump io.Reader, opts Options) (*
 	if err != nil {
 		return nil, err
 	}
-	def := strings.TrimPrefix(policy.FullRefName(rp.Meta().DefaultRef), "heads/")
+	def, committed := opts.DefaultBranch, map[string]hash.Hash{}
+	if def == "" {
+		def = "main"
+	}
+	if rp != nil {
+		def = strings.TrimPrefix(policy.FullRefName(rp.Meta().DefaultRef), "heads/")
+		committed = rp.Refs()
+	}
 	im := &importer{
-		ctx: ctx, rp: rp, opts: opts, lay: lay, dr: dr, defaultBranch: def,
-		rep:       &Report{Refs: map[string]string{}, Renamed: map[string]string{}, DroppedProps: map[string]int{}},
+		ctx: ctx, rp: rp, opts: opts, lay: lay, dr: dr, defaultBranch: def, dry: opts.DryRun,
+		rep:       &Report{DryRun: opts.DryRun, Refs: map[string]string{}, Renamed: map[string]string{}, DroppedProps: map[string]int{}},
 		revs:      map[string][]mark{},
 		heads:     map[string]*head{},
+		loaded:    map[string]bool{},
 		names:     map[string]string{},
 		want:      map[string]hash.Hash{},
-		committed: rp.Refs(),
+		committed: committed,
 		trees:     map[hash.Hash]hash.Hash{},
+		history:   map[string][]mark{},
 		needsLock: map[string]bool{},
 		authors:   map[string]bool{},
 		rev:       -1,
+	}
+	if len(committed) > 0 {
+		if err := im.resume(); err != nil {
+			return nil, err
+		}
 	}
 	if err := im.run(); err != nil {
 		return im.rep, err
@@ -137,9 +163,10 @@ type head struct {
 
 // edit is a ref being changed in the current revision.
 type edit struct {
-	parent hash.Hash // the commit the new one builds on; zero for none
-	root   hash.Hash // the tree so far, without files
-	files  map[string]*object.Entry
+	parent  hash.Hash // the commit the new one builds on; zero for none
+	root    hash.Hash // the tree so far, without files
+	files   map[string]*object.Entry
+	changed bool // for a dry run: whether a node changed the ref's content
 }
 
 type importer struct {
@@ -150,8 +177,18 @@ type importer struct {
 	dr            *svndump.Reader
 	rep           *Report
 	defaultBranch string
+	dry           bool
 
-	revs      map[string][]mark    // SVN ref path → its commits by revision
+	// An incremental import continues from revision base, and finds what
+	// earlier imports wrote through refs: heads are loaded on first use,
+	// and history walks a ref's first-parent commits.
+	resumed  bool
+	base     int
+	baseUUID string
+	loaded   map[string]bool   // SVN ref paths whose head was looked up
+	history  map[string][]mark // F1 ref → its commits by revision, oldest first
+
+	revs      map[string][]mark    // SVN ref path → its commits by revision, in this import
 	heads     map[string]*head     // SVN ref path → live ref
 	names     map[string]string    // F1 ref → SVN ref path, for live refs
 	want      map[string]hash.Hash // ref values since the last checkpoint (zero deletes)
@@ -188,7 +225,22 @@ func (im *importer) run() error {
 			if rec.Number <= im.rev {
 				return fmt.Errorf("svnimport: revision %d follows revision %d", rec.Number, im.rev)
 			}
+			if im.rev < 0 && im.resumed {
+				if err := im.checkContinuation(rec.Number); err != nil {
+					return err
+				}
+			}
+			if im.rev < 0 || im.rev == 0 && rec.Number > 0 {
+				im.rep.FirstRevision = rec.Number
+			}
 			im.rev, im.revProps = rec.Number, rec.Props
+			if d, ok := rec.Props["svn:date"]; ok {
+				t, err := time.Parse(time.RFC3339Nano, d)
+				if err != nil {
+					return fmt.Errorf("svnimport: r%d: invalid svn:date %q", rec.Number, d)
+				}
+				im.lastTime = t
+			}
 			im.edits, im.touched = map[string]*edit{}, map[string]bool{}
 		case *svndump.Node:
 			if im.rev < 0 {
@@ -217,9 +269,12 @@ func (im *importer) node(n *svndump.Node) error {
 	switch c.kind {
 	case container:
 		if n.Action == svndump.ActionDelete || n.Action == svndump.ActionReplace {
+			if im.resumed {
+				return errors.New("deleting a directory of the layout is not supported in an incremental import")
+			}
 			for p := range im.heads {
 				if under(p, n.Path) {
-					im.deleteRef(p)
+					im.deleteRef(class{ref: p})
 				}
 			}
 		}
@@ -240,7 +295,7 @@ func (im *importer) node(n *svndump.Node) error {
 			return errors.New("a file where the layout expects a branch or tag directory")
 		}
 		if n.Action == svndump.ActionDelete || n.Action == svndump.ActionReplace {
-			im.deleteRef(c.ref)
+			im.deleteRef(c)
 		}
 		switch n.Action {
 		case svndump.ActionDelete:
@@ -258,6 +313,7 @@ func (im *importer) node(n *svndump.Node) error {
 	if err != nil {
 		return err
 	}
+	e.changed = true
 	if n.Action == svndump.ActionDelete || n.Action == svndump.ActionReplace {
 		if err := im.remove(e, c.rel); err != nil {
 			return err
@@ -267,7 +323,11 @@ func (im *importer) node(n *svndump.Node) error {
 		}
 	}
 	if n.Kind == svndump.KindDir {
-		if n.CopyFromRev >= 0 {
+		if n.CopyFromRev >= 0 && im.dry {
+			if _, err := im.copyCommit(n); err != nil {
+				return err
+			}
+		} else if n.CopyFromRev >= 0 {
 			src, err := im.copySource(n)
 			if err != nil {
 				return err
@@ -296,6 +356,16 @@ type fileState struct {
 }
 
 func (im *importer) file(e *edit, rel string, n *svndump.Node) error {
+	im.fileProps(n)
+	if im.dry {
+		if n.CopyFromRev >= 0 {
+			if _, err := im.copyCommit(n); err != nil {
+				return err
+			}
+		}
+		im.rep.Bytes += n.TextLength
+		return nil
+	}
 	var start *object.Entry
 	switch {
 	case n.Action == svndump.ActionChange:
@@ -337,10 +407,6 @@ func (im *importer) file(e *edit, rel string, n *svndump.Node) error {
 				st.special = true
 			case "svn:mime-type":
 				st.contentType = v
-			case "svn:needs-lock":
-				im.needsLock[lockGlob(n.Path)] = true
-			default:
-				im.rep.DroppedProps[k]++
 			}
 		}
 		for _, k := range n.DeletedProps {
@@ -384,6 +450,19 @@ func (im *importer) file(e *edit, rel string, n *svndump.Node) error {
 	return nil
 }
 
+// fileProps records what the report says about a file's properties.
+func (im *importer) fileProps(n *svndump.Node) {
+	for k := range n.Props {
+		switch k {
+		case "svn:executable", "svn:special", "svn:mime-type":
+		case "svn:needs-lock":
+			im.needsLock[lockGlob(n.Path)] = true
+		default:
+			im.rep.DroppedProps[k]++
+		}
+	}
+}
+
 // text ingests a node's text, applying a delta against start's content if
 // it is one, and checks the dump's checksums. A special file's text is
 // "link <target>"; F1 stores the target.
@@ -392,7 +471,7 @@ func (im *importer) text(n *svndump.Node, start *object.Entry, special bool) (ha
 	src, size := n.Text, n.TextLength
 	var wait func() error
 	if n.TextDelta {
-		base, err := im.base(start, n.TextDeltaBaseMD5)
+		base, err := im.deltaBase(start, n.TextDeltaBaseMD5)
 		if err != nil {
 			return hash.Zero, err
 		}
@@ -431,9 +510,9 @@ func (im *importer) text(n *svndump.Node, start *object.Entry, special bool) (ha
 	return target, check.Check()
 }
 
-// base returns the delta base: start's content in its SVN form, checked
+// deltaBase returns the delta base: start's content in its SVN form, checked
 // against the dump's MD5 when it gives one.
-func (im *importer) base(start *object.Entry, wantMD5 string) (io.ReaderAt, error) {
+func (im *importer) deltaBase(start *object.Entry, wantMD5 string) (io.ReaderAt, error) {
 	if start == nil {
 		return bytes.NewReader(nil), nil
 	}
@@ -495,20 +574,31 @@ func (im *importer) ingest(r io.Reader, size int64) (hash.Hash, error) {
 	return res.File, nil
 }
 
-// copySource returns the entry a node copies.
-func (im *importer) copySource(n *svndump.Node) (object.Entry, error) {
+// copyCommit returns the commit holding a node's copy source, and where
+// the source is in the layout.
+func (im *importer) copyCommit(n *svndump.Node) (class, error) {
 	c, err := im.lay.classify(n.CopyFromPath)
 	if err != nil {
-		return object.Entry{}, fmt.Errorf("copy source: %w", err)
+		return class{}, fmt.Errorf("copy source: %w", err)
 	}
 	if c.kind == container {
-		return object.Entry{}, fmt.Errorf("copying %s, a directory of the layout, is not supported", n.CopyFromPath)
+		return class{}, fmt.Errorf("copying %s, a directory of the layout, is not supported", n.CopyFromPath)
 	}
-	commit := im.at(c.ref, n.CopyFromRev)
-	if commit.IsZero() {
-		return object.Entry{}, fmt.Errorf("the copy source %s@%d is not in an imported branch", n.CopyFromPath, n.CopyFromRev)
+	commit, err := im.at(c, n.CopyFromRev)
+	if err == nil && commit.IsZero() {
+		err = fmt.Errorf("the copy source %s@%d is not in an imported branch", n.CopyFromPath, n.CopyFromRev)
 	}
-	root, err := im.tree(commit)
+	c.commit = commit
+	return c, err
+}
+
+// copySource returns the entry a node copies.
+func (im *importer) copySource(n *svndump.Node) (object.Entry, error) {
+	c, err := im.copyCommit(n)
+	if err != nil {
+		return object.Entry{}, err
+	}
+	root, err := im.tree(c.commit)
 	if err != nil {
 		return object.Entry{}, err
 	}
@@ -522,14 +612,25 @@ func (im *importer) copySource(n *svndump.Node) (object.Entry, error) {
 	return e, err
 }
 
-// at returns the commit of an SVN ref path as of a revision, or zero.
-func (im *importer) at(refPath string, rev int) hash.Hash {
-	marks := im.revs[refPath]
+// at returns the commit of the branch or tag holding c as of a revision,
+// or zero.
+func (im *importer) at(c class, rev int) (hash.Hash, error) {
+	if h, ok := markAt(im.revs[c.ref], rev); ok {
+		return h, nil
+	}
+	if !im.resumed {
+		return hash.Zero, nil
+	}
+	return im.historyAt(c, min(rev, im.base))
+}
+
+// markAt returns the commit of the last mark at or before rev.
+func markAt(marks []mark, rev int) (hash.Hash, bool) {
 	i := sort.Search(len(marks), func(i int) bool { return marks[i].rev > rev })
 	if i == 0 {
-		return hash.Zero
+		return hash.Zero, false
 	}
-	return marks[i-1].commit
+	return marks[i-1].commit, true
 }
 
 func (im *importer) tree(commit hash.Hash) (hash.Hash, error) {
@@ -548,7 +649,7 @@ func (im *importer) editFor(c class) (*edit, error) {
 	if e := im.edits[c.ref]; e != nil {
 		return e, nil
 	}
-	h := im.heads[c.ref]
+	h := im.head(c)
 	if h == nil {
 		if !im.lay.root {
 			return nil, fmt.Errorf("%s is in a branch or tag that does not exist", c.rel)
@@ -557,9 +658,12 @@ func (im *importer) editFor(c class) (*edit, error) {
 		im.heads[c.ref] = h
 		im.names[h.name] = c.ref
 	}
-	root, err := im.tree(h.commit)
-	if err != nil {
-		return nil, err
+	var root hash.Hash
+	if !im.dry {
+		var err error
+		if root, err = im.tree(h.commit); err != nil {
+			return nil, err
+		}
 	}
 	e := &edit{parent: h.commit, root: root, files: map[string]*object.Entry{}}
 	if h.tag && h.created < im.rev {
@@ -572,27 +676,32 @@ func (im *importer) editFor(c class) (*edit, error) {
 
 // createRef starts a new ref at an added branch or tag directory.
 func (im *importer) createRef(c class, n *svndump.Node) error {
-	if im.heads[c.ref] != nil {
+	if im.head(c) != nil {
 		return errors.New("the branch or tag already exists")
 	}
 	name, err := im.refName(c)
 	if err != nil {
 		return err
 	}
-	e := &edit{files: map[string]*object.Entry{}}
+	e := &edit{files: map[string]*object.Entry{}, changed: n.CopyFromRev < 0}
 	switch {
+	case im.dry && n.CopyFromRev >= 0:
+		var src class
+		if src, err = im.copyCommit(n); err == nil && src.kind == refRoot {
+			e.parent = src.commit
+		}
+		e.changed = src.kind != refRoot
+	case im.dry:
 	case n.CopyFromRev < 0:
 		e.root, err = im.tree(hash.Zero)
 	default:
-		src, cerr := im.lay.classify(n.CopyFromPath)
-		if cerr != nil {
-			return fmt.Errorf("copy source: %w", cerr)
+		var src class
+		if src, err = im.copyCommit(n); err != nil {
+			return err
 		}
 		if src.kind == refRoot {
 			// A copy of a whole branch: the new ref starts at its commit.
-			if e.parent = im.at(src.ref, n.CopyFromRev); e.parent.IsZero() {
-				return fmt.Errorf("the copy source %s@%d is not in an imported branch", n.CopyFromPath, n.CopyFromRev)
-			}
+			e.parent = src.commit
 			e.root, err = im.tree(e.parent)
 			break
 		}
@@ -624,13 +733,43 @@ func (im *importer) refName(c class) (string, error) {
 	if other, ok := im.names[name]; ok && other != c.ref {
 		return "", fmt.Errorf("%s and %s both map to ref %s", other, c.ref, name)
 	}
+	if _, ok := im.names[name]; !ok && !im.value(name).IsZero() {
+		return "", fmt.Errorf("%s maps to ref %s, which another branch or tag holds", c.ref, name)
+	}
 	return name, nil
+}
+
+// value returns a ref's value as this import has left it so far.
+func (im *importer) value(name string) hash.Hash {
+	if v, ok := im.want[name]; ok {
+		return v
+	}
+	return im.committed[name]
+}
+
+// head returns the live ref holding c, or nil. In an incremental import
+// it finds refs of earlier imports by the name the layout gives them.
+func (im *importer) head(c class) *head {
+	if h := im.heads[c.ref]; h != nil || !im.resumed || im.loaded[c.ref] {
+		return h
+	}
+	im.loaded[c.ref] = true
+	name := c.refName(im.defaultBranch)
+	v := im.value(name)
+	if v.IsZero() {
+		return nil
+	}
+	h := &head{name: name, tag: c.tag, commit: v}
+	im.heads[c.ref] = h
+	im.names[name] = c.ref
+	return h
 }
 
 // deleteRef ends a live ref. Its commit stays reachable under
 // svn-deleted/, named after the deleting revision.
-func (im *importer) deleteRef(refPath string) {
-	h := im.heads[refPath]
+func (im *importer) deleteRef(c class) {
+	refPath := c.ref
+	h := im.head(c)
 	if h == nil {
 		return
 	}
@@ -672,6 +811,9 @@ func (im *importer) stat(e *edit, rel string) (*object.Entry, error) {
 
 // remove deletes a file or a directory from an edit.
 func (im *importer) remove(e *edit, rel string) error {
+	if im.dry {
+		return nil
+	}
 	ent, err := im.stat(e, rel)
 	if err != nil {
 		return err
@@ -733,17 +875,26 @@ func (im *importer) endRevision() error {
 	sort.Strings(refs)
 	for _, p := range refs {
 		e, h := im.edits[p], im.heads[p]
-		if err := im.flush(e); err != nil {
-			return fmt.Errorf("svnimport: r%d %s: %w", im.rev, p, err)
-		}
 		commit := e.parent
-		parentTree, err := im.tree(e.parent)
-		if err != nil {
-			return err
-		}
-		if e.parent.IsZero() || e.root != parentTree {
-			if commit, err = im.commit(e); err != nil {
+		if im.dry {
+			if e.changed || e.parent.IsZero() {
+				// Stands for the commit an import would write.
+				commit = hash.Plain([]byte(fmt.Sprintf("dry run r%d %s", im.rev, p)))
+				im.rep.Commits++
+			}
+			im.author()
+		} else {
+			if err := im.flush(e); err != nil {
 				return fmt.Errorf("svnimport: r%d %s: %w", im.rev, p, err)
+			}
+			parentTree, err := im.tree(e.parent)
+			if err != nil {
+				return err
+			}
+			if e.parent.IsZero() || e.root != parentTree {
+				if commit, err = im.commit(e); err != nil {
+					return fmt.Errorf("svnimport: r%d %s: %w", im.rev, p, err)
+				}
 			}
 		}
 		if commit != h.commit {
@@ -777,24 +928,8 @@ func (im *importer) endRevision() error {
 
 // commit writes the commit of an edit for the current revision.
 func (im *importer) commit(e *edit) (hash.Hash, error) {
-	author := im.revProps["svn:author"]
-	who, ok := im.opts.Authors[author]
-	if !ok {
-		if author == "" {
-			author = "no-author"
-		}
-		im.authors[author] = true
-		who = repo.Person{Name: author, Email: author + "@" + im.dr.UUID}
-	}
+	who := im.author()
 	t := im.lastTime
-	if d, ok := im.revProps["svn:date"]; ok {
-		parsed, err := time.Parse(time.RFC3339Nano, d)
-		if err != nil {
-			return hash.Zero, fmt.Errorf("invalid svn:date %q", d)
-		}
-		t = parsed
-	}
-	im.lastTime = t
 	msg := strings.TrimRight(im.revProps["svn:log"], " \t\r\n")
 	if msg != "" {
 		msg += "\n\n"
@@ -817,10 +952,37 @@ func (im *importer) commit(e *edit) (hash.Hash, error) {
 	return h, nil
 }
 
+// author returns the author of the current revision. A user missing from
+// the authors file becomes "user <user@uuid>", as git-svn writes, and
+// a revision without svn:author "(no author)".
+func (im *importer) author() repo.Person {
+	user := im.revProps["svn:author"]
+	if who, ok := im.opts.Authors[user]; ok && user != "" {
+		return who
+	}
+	if user == "" {
+		im.authors["(no author)"] = true
+		return repo.Person{Name: "(no author)", Email: "no-author@" + im.dr.UUID}
+	}
+	im.authors[user] = true
+	return repo.Person{Name: user, Email: user + "@" + im.dr.UUID}
+}
+
 // checkpoint moves the refs changed since the last checkpoint, in one
 // atomic update.
 func (im *importer) checkpoint() error {
 	im.sinceRevs, im.sinceBytes = 0, 0
+	if im.dry {
+		clear(im.want)
+		return nil
+	}
+	if im.rep.Revisions > 0 {
+		m, err := im.marker()
+		if err != nil {
+			return err
+		}
+		im.want[MarkerRef] = m
+	}
 	names := make([]string, 0, len(im.want))
 	for n := range im.want {
 		names = append(names, n)

@@ -5,7 +5,7 @@ F1 is one storage system for files of every size, with full history. It replaces
 This manual describes F1 as built at the end of phase 9 (hardening and performance). It has four parts:
 
 1. **Getting started**: what F1 is, its concepts, running a server, and a first session.
-2. **Using F1**: namespaces, the native client `f1`, S3, Git and Git LFS, locks, history and retention.
+2. **Using F1**: namespaces, the native client `f1`, S3, Git and Git LFS, locks, history and retention, and moving from Subversion.
 3. **The native API**: its conventions, endpoints and errors, and the Go client package.
 4. **Operating F1**: deployment, configuration, identities and access, `f1d`, backups, garbage collection, checks, monitoring and limits.
 
@@ -648,6 +648,91 @@ Retention removes older history at the next garbage collection (§4.6):
 
 The oldest kept commit then has parents that are no longer stored; history simply ends there. Content stays as long as any kept commit, open multipart upload or recent write uses it.
 
+## 2.7 Moving from Subversion {#svn}
+
+`f1d repo import-svn` imports a Subversion repository with its full history: one commit per revision on each branch it changes, with the SVN author, date, message and revision number (ADR-0019). It reads a dump, so it needs no access to the SVN server beyond what `svnadmin` or `svnrdump` has. An administrator runs it on the F1 host, with the server running or stopped.
+
+```sh
+$ svnadmin dump -q /srv/svn/boards | f1d repo import-svn --create svn --authors authors.toml boards -
+boards created
+boards: imported r1–r1874 (1874 revisions): 2061 commits, 48120443913 bytes of content
+  branches/rev-b → heads/rev-b
+  branches/rev c → heads/rev-c
+  tags/v1.0 → tags/v1.0
+  trunk → heads/main
+renamed (not valid ref names): branches/rev c → heads/rev-c
+deleted branches and tags, kept as: heads/svn-deleted/spike-r412
+authors not in the authors file, written as user <user@uuid>: build
+svn:needs-lock was set on files matching: *.brd, *.sch; f1repo.toml can require locks with
+  locks = "required:*.brd,*.sch"
+to continue later: svnadmin dump --incremental -r 1875:HEAD <repository> | f1d repo import-svn boards -
+```
+
+- **The dump.** `svnadmin dump` on the SVN host, or `svnrdump dump https://svn.example.com/boards` from anywhere the repository can be read. `-` reads standard input; a file name reads the file. Files of any size are streamed.
+- **The namespace** must be empty, or hold an earlier import of the same repository (below). `--create <preset>` creates it: `svn` for repositories of large binaries, `git` to serve the history to Git clients.
+- **Authors.** An authors file maps SVN user names to Git-style authors. Users missing from it are written as `user <user@<repository UUID>>`, as git-svn does, and listed in the report.
+
+  ```toml
+  jdoe  = "John Doe <jdoe@example.com>"
+  build = "Build Robot <build@example.com>"
+  ```
+
+- **`--dry-run`** reads and maps the whole dump and prints the report, without writing anything. Use it first, to see the branches, renames and authors; the namespace need not exist yet.
+
+### Branches and tags
+
+| SVN path | F1 ref |
+|---|---|
+| `trunk/` | the namespace's default branch (`main`) |
+| `branches/<x>/` | `heads/<x>` |
+| `tags/<x>/` | `tags/<x>` |
+| a deleted branch or tag | kept as `heads/svn-deleted/<x>-r<rev>` or `tags/svn-deleted/<x>-r<rev>`, `<rev>` being the deleting revision |
+
+- **Other layouts.** `--trunk <path>`, `--branches <path>` and `--tags <path>` set the paths; the last two repeat (`--branches branches --branches releases`). `--root` imports the whole repository as the default branch, for repositories without branches. A file outside the layout stops the import with its revision and path.
+- **Branch history.** A branch copied from trunk starts at trunk's commit for that revision, so `git log` and `f1 log` of the branch continue into trunk. A branch copied from a subdirectory starts with that directory's content, without history.
+- **Names** that refs cannot hold have their invalid characters replaced with `-` (`rev c` becomes `rev-c`), and are listed in the report.
+- **Tags changed after their creation** get a commit on top, and are listed in the report.
+
+### What is kept
+
+| SVN | F1 |
+|---|---|
+| a revision | a commit on each branch it changes; the message ends with `SVN-Revision: <n>` and `SVN-UUID: <uuid>` |
+| `svn:author`, `svn:date` | author and committer, at that time (UTC) |
+| `svn:executable` | an executable file |
+| `svn:special` (a symbolic link) | a symbolic link |
+| `svn:mime-type` | the file's content type, as S3 serves it |
+| `svn:needs-lock` | reported, with a `locks = "required:…"` line for `f1repo.toml` (§2.1); the setting is not changed |
+| `svn:externals`, `svn:ignore` | reported per path, not imported |
+| `svn:eol-style`, `svn:keywords` | dropped; files keep the content stored in the repository (LF line endings for `native`, keywords unexpanded) |
+| `svn:mergeinfo`, other properties | dropped and counted in the report |
+| copies inside a branch (`svn mv`, `svn cp`) | the content is copied; history and `blame` of the copy start there |
+| empty directories | not kept, as in Git |
+| locks | not in dumps: take them again in F1 |
+
+The import is history, so the namespace's lock rules do not apply to it. Find a commit by its old revision with `git log --grep '^SVN-Revision: 1234$'`, or in the messages of `f1 log`.
+
+### Importing in steps
+
+Teams can keep working in SVN while the import catches up, and switch later. Each import ends by printing the command that continues it:
+
+```sh
+$ svnadmin dump -q --incremental -r 1875:HEAD /srv/svn/boards | f1d repo import-svn boards -
+boards: imported r1875–r1903 (29 revisions), continuing from r1874: 31 commits, 1048576 bytes of content
+```
+
+- Progress is recorded in the ref `notes/svn-import`, which moves with the branches. Branch and tag lists do not show it.
+- The dump must start right after the last imported revision, come from the same repository, and the import must use the same `--trunk`, `--branches`, `--tags` or `--root` options. Otherwise it is refused before anything is written.
+- An import is refused if a branch has commits made in F1 since the last import. Switch once, when SVN is frozen: run the last incremental import, then let users work in F1.
+- An interrupted import keeps what it wrote up to its last checkpoint (every 1,000 revisions or 1 GiB); run it again from the revision the marker records.
+- When the migration is over, the marker can stay, or be deleted through the native API:
+
+  ```sh
+  $ curl -H "Authorization: Bearer $F1_TOKEN" http://f1.example.com:8080/api/v1/ns/boards/refs   # its "commit"
+  $ curl -X PUT -H "Authorization: Bearer $F1_TOKEN" -d '{"old":"<commit>","new":""}' \
+      http://f1.example.com:8080/api/v1/ns/boards/refs/notes/svn-import
+  ```
+
 ---
 
 # 3 The native API {#part-3}
@@ -1029,6 +1114,7 @@ f1d <command> [flags]
 | `repo freeze <ns>`, `repo unfreeze <ns>` | make a repository read-only for copying |
 | `repo archive <ns> <file.zip>` | a ZIP of the repository; writes continue |
 | `repo import <file.zip\|dir> [--name ns] [--new-uuid]` | add a repository from an archive or directory |
+| `repo import-svn <ns> <dump\|-> [--authors f] [--trunk p] [--branches p]… [--tags p]… [--root] [--create preset] [--dry-run]` | import a Subversion dump (§2.7) |
 | `repo attach <ns>`, `repo detach <ns>` | register `repos/<ns>`, or release it for moving |
 | `repo rebuild-cache <ns> \| --dir <dir>` | rebuild `cache.db` (offline) |
 | `repo export-acl <ns> [file]`, `repo import-acl <ns> <file>` | move a namespace's ACL |
@@ -1171,5 +1257,5 @@ Logs are structured (`log/slog`); `log.format = "json"` suits log collectors.
 - **Git**: thin fetch packs against the client's objects; SHA-256 repositories.
 - **S3**: bucket policies and ACLs, lifecycle rules, object lock, encryption settings, tagging, website hosting, Select, replication.
 - **Clients**: OIDC login in `f1` (tokens come from the environment), branch merges in the native client, a FUSE file system, a web UI.
-- **Protocols**: the SVN wire protocol; SVN users move to the native client, Git or S3.
+- **Protocols**: the SVN wire protocol; SVN users move to the native client, Git or S3, and `f1d repo import-svn` brings their history (§2.7).
 - **Hosting on Windows.** The server runs on Unix systems; clients run anywhere.
