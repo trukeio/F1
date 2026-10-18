@@ -1,0 +1,13 @@
+{{define "content"}}{{with .Data}}
+<div class="settings">
+{{template "settingsnav" .}}
+<section>
+  <form method="post" action="{{.Action}}" class="box form">
+    <h1>{{.Question}}</h1>
+    <p>{{.Detail}}</p>
+    <button class="btn danger">{{.Button}}</button>
+    <a class="btn" href="{{.Back}}">Cancel</a>
+  </form>
+</section>
+</div>
+{{end}}{{end}}

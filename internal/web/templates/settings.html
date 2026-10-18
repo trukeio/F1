@@ -1,0 +1,13 @@
+{{define "content"}}{{with .Data}}
+<div class="settings">
+{{template "settingsnav" .}}
+<section>
+  <h1>Profile</h1>
+  <table class="grid props">
+    <tr><th>Principal</th><td class="mono">{{.Me.Principal}}</td></tr>
+    <tr><th>Groups</th><td>{{range .Me.Groups}}<span class="tag">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</td></tr>
+  </table>
+  <p class="muted">Groups come from F1's users, or from your identity provider when you sign in with it. They decide, with the ACLs, what you can read and change.</p>
+</section>
+</div>
+{{end}}{{end}}

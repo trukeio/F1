@@ -112,6 +112,7 @@ A namespace is a repository: a self-contained directory `repos/<ns>/`.
 - **Sign-in with a token.** With `token_login = true`, users can paste an F1 token instead; local users have no other way.
 - **Pages** follow GitHub's URLs: `/<namespace>`, `/<namespace>/tree/<ref>/<path>`, `blob`, `raw`, `commits`, `commit/<hash>`, `compare/<a>...<b>`, `branches`, `tags` and `locks`. A ref with `/` is written with `%2F` (`tags%2Fv1`). Files larger than `max_render` bytes (default 1 MiB) are offered for download instead of being displayed or diffed.
 - **Code menu.** A namespace's root page has a Code button, as on GitHub: the commands to clone it with Git (Git namespaces), the native client (`layout = tree`) and S3, and a ZIP of its files at the ref shown (`/<namespace>/archive/<ref>.zip`). The ZIP is streamed and holds only the files the user can read. Set `clone_url` to the URL users reach F1's main listener at when it differs from `f1_url`, and `s3_url` to offer an S3 command.
+- **Settings.** The user's name in the header opens `/-/settings`, where users see their groups and create and revoke their own tokens and S3 keys (ADR-0020). A new secret is shown once. Token expiries are limited by F1's `auth.token_max_ttl`.
 - **Keyboard shortcuts:** `t` finds a file, `y` turns the URL into a permalink at the current commit, `?` lists the shortcuts.
 - **Sessions** are kept in memory and end after `session_idle` without a request, at sign-out, or when `f1web` restarts. Tokens stay in `f1web`; the browser holds only a session ID.
 

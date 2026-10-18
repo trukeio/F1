@@ -1,0 +1,39 @@
+{{define "content"}}{{$msg := .Message}}{{with .Data}}{{$p := .}}
+<div class="settings">
+{{template "settingsnav" .}}
+<section>
+  <h1>Tokens</h1>
+  <p class="muted">A token lets Git, the <code>f1</code> client and scripts act as you: set it in <code>F1_TOKEN</code>, or give it as the Git password.</p>
+  {{with .Secret}}{{template "secret" (secretBox "New token" "token" "Token" .Value)}}{{end}}
+  {{if $msg}}<p class="flash">{{$msg}}</p>{{end}}
+  {{if .Tokens}}
+  <div class="box scroll listing">
+  <table class="grid">
+    <tr><th>Token</th><th>Description</th><th>Created</th><th>Expires</th><th></th></tr>
+    {{range .Tokens}}
+    <tr>
+      <td class="mono">{{.ID}}</td>
+      <td>{{.Description}}</td>
+      <td>{{.Created.UTC.Format "2006-01-02"}}</td>
+      <td>{{with .Expires}}{{.UTC.Format "2006-01-02"}}{{else}}<span class="muted">never</span>{{end}}{{if $p.Expired .}} <span class="tag warn">expired</span>{{end}}</td>
+      <td class="actions"><a class="btn danger" href="/-/settings/tokens/{{.ID}}/revoke">Revoke</a></td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  {{else}}
+  <p class="muted">You have no tokens.</p>
+  {{end}}
+  <h2>New token</h2>
+  <form method="post" action="/-/settings/tokens" class="box form">
+    <label for="description">Description</label>
+    <input id="description" name="description" type="text" maxlength="200" placeholder="What it is for, for example laptop or CI" autocomplete="off">
+    <label for="days">Expires in</label>
+    <select id="days" name="days">
+      {{range .Days}}<option value="{{.}}"{{if eq . 30}} selected{{end}}>{{.}} days</option>{{end}}
+    </select>
+    <button class="btn primary">Create token</button>
+  </form>
+</section>
+</div>
+{{end}}{{end}}

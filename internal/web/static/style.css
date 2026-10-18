@@ -83,6 +83,7 @@ input[type=password], input[type=text] {
   --add-fg: #1a7f37;
   --del-fg: #d1242f;
   --sel: #fd8c73;
+  --danger: #d1242f;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -94,6 +95,7 @@ input[type=password], input[type=text] {
     --add-fg: #3fb950;
     --del-fg: #f85149;
     --sel: #f78166;
+    --danger: #f85149;
   }
 }
 .mono, code, pre, table.code, table.diff { font-family: var(--mono); font-size: 12px; }
@@ -237,3 +239,28 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border: 1px s
 @media (max-width: 640px) {
   table.entries td.lastmsg, table.entries td.lastdate { display: none; }
 }
+h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; }
+.top .user a { color: var(--header-fg); }
+.settings { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 720px) { .settings { grid-template-columns: minmax(0, 1fr); } }
+.sidenav { display: flex; flex-direction: column; gap: 2px; }
+.sidenav a { padding: 6px 12px; color: var(--fg); border-radius: 6px; border-left: 2px solid transparent; }
+.sidenav a:hover { background: var(--bg-subtle); text-decoration: none; }
+.sidenav a.sel { font-weight: 600; background: var(--bg-subtle); border-left-color: var(--sel); }
+@media (max-width: 720px) {
+  .sidenav { flex-direction: row; overflow-x: auto; }
+  .sidenav a { border-left: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
+  .sidenav a.sel { border-bottom-color: var(--sel); }
+}
+table.props th { text-align: left; padding-right: 24px; }
+td.actions { text-align: right; white-space: nowrap; }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover { color: #fff; background: var(--danger); border-color: transparent; }
+.form { max-width: 480px; }
+.form h1 { font-size: 16px; }
+.form .btn { margin-top: 4px; }
+select { display: block; padding: 5px 8px; margin-bottom: 12px; font: inherit; color: var(--fg); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 6px; }
+.secret { margin-bottom: 16px; }
+.secret p { margin: 0 0 10px; }
+.secret .copyline { margin-bottom: 8px; }
+.secret .copyline input[type=text] { margin: 0; }

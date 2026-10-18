@@ -66,3 +66,24 @@
 <p class="muted">No changes.</p>
 {{end}}
 {{end}}
+
+{{define "settingsnav"}}
+<nav class="sidenav">
+  <a href="/-/settings"{{if eq .Tab "profile"}} class="sel"{{end}}>Profile</a>
+  <a href="/-/settings/tokens"{{if eq .Tab "tokens"}} class="sel"{{end}}>Tokens</a>
+  <a href="/-/settings/s3keys"{{if eq .Tab "s3keys"}} class="sel"{{end}}>S3 keys</a>
+</nav>
+{{end}}
+
+{{define "secret"}}
+<div class="flash secret">
+  <p><strong>{{.Title}}</strong> Copy it now: it is shown only once.</p>
+  {{range .Lines}}
+  <label for="secret-{{.Name}}">{{.Label}}</label>
+  <div class="copyline">
+    <input id="secret-{{.Name}}" type="text" readonly value="{{.Value}}" autocomplete="off" spellcheck="false">
+    <button type="button" class="btn copy" data-copy="{{.Value}}" title="Copy to clipboard" hidden>Copy</button>
+  </div>
+  {{end}}
+</div>
+{{end}}

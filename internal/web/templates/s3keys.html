@@ -1,0 +1,29 @@
+{{define "content"}}{{with .Data}}
+<div class="settings">
+{{template "settingsnav" .}}
+<section>
+  <h1>S3 keys</h1>
+  <p class="muted">An S3 access key lets S3 tools and SDKs read and write namespaces as you, with your permissions.</p>
+  {{with .Secret}}{{template "secret" (secretBox "New S3 key" "key" "Access key" .ID "secret" "Secret key" .Value)}}{{end}}
+  {{if .S3Keys}}
+  <div class="box scroll listing">
+  <table class="grid">
+    <tr><th>Access key</th><th>Created</th><th></th></tr>
+    {{range .S3Keys}}
+    <tr>
+      <td class="mono">{{.AccessKey}}</td>
+      <td>{{.Created.UTC.Format "2006-01-02"}}</td>
+      <td class="actions"><a class="btn danger" href="/-/settings/s3keys/{{.AccessKey}}/revoke">Revoke</a></td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  {{else}}
+  <p class="muted">You have no S3 keys.</p>
+  {{end}}
+  <form method="post" action="/-/settings/s3keys">
+    <button class="btn primary">Create S3 key</button>
+  </form>
+</section>
+</div>
+{{end}}{{end}}

@@ -62,6 +62,7 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /-/logout", s.logout)
 	mux.HandleFunc("GET /{$}", s.page(s.home))
 	s.routes(mux)
+	s.settingsRoutes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusNotFound, "error", pageData{Title: "Not found", Message: "This page does not exist."})
 	})

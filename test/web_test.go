@@ -16,6 +16,7 @@ import (
 	"github.com/trukeio/f1/internal/auth"
 	"github.com/trukeio/f1/internal/oidctest"
 	"github.com/trukeio/f1/internal/web"
+	"github.com/trukeio/f1/pkg/f1client"
 )
 
 // startWeb runs f1web against e and returns its URL. mod, if not nil,
@@ -410,5 +411,89 @@ func TestWebPages(t *testing.T) {
 	page2 := func(path string) int { status, _, _ := fetch(t, bb, "GET", w+path, nil, nil); return status }
 	if s := page2("/proj/commits/main/docs/guide.md"); s != 200 {
 		t.Errorf("bob's file history: %d", s)
+	}
+}
+
+// Users manage their own tokens and S3 keys in f1web (ADR-0020, A2).
+func TestWebSettings(t *testing.T) {
+	e := start(t, envOpts{})
+	w := startWeb(t, e, nil)
+	b := browser(t)
+	if status, _, _ := fetch(t, b, "POST", w+"/-/login/token", url.Values{"token": {e.tokens["alice"]}, "next": {"/"}}, nil); status != 200 {
+		t.Fatalf("sign-in: %d", status)
+	}
+
+	status, _, body := fetch(t, b, "GET", w+"/-/settings", nil, nil)
+	if status != 200 || !strings.Contains(body, "user:alice") || !strings.Contains(body, "group:eng") {
+		t.Fatalf("profile: %d\n%s", status, body)
+	}
+
+	// A new token is shown once, and works.
+	status, path, body := fetch(t, b, "POST", w+"/-/settings/tokens", url.Values{"description": {"laptop"}, "days": {"30"}}, nil)
+	i := strings.Index(body, `value="f1_`)
+	if status != 200 || path != "/-/settings/tokens" || i < 0 {
+		t.Fatalf("create token: %d %s\n%s", status, path, body)
+	}
+	secret := body[i+len(`value="`):]
+	secret = secret[:strings.IndexByte(secret, '"')]
+	if _, err := f1client.New(e.url, secret).Me(ctx); err != nil {
+		t.Fatalf("new token: %v", err)
+	}
+	if _, _, body = fetch(t, b, "GET", w+"/-/settings/tokens", nil, nil); strings.Contains(body, secret) || !strings.Contains(body, "laptop") {
+		t.Fatalf("token page after creation:\n%s", body)
+	}
+	toks, _ := e.alice.Tokens(ctx)
+	var id string
+	for _, x := range toks {
+		if x.Description == "laptop" {
+			id = x.ID
+		}
+	}
+
+	// F1's refusal is shown on the form.
+	if status, _, body = fetch(t, b, "POST", w+"/-/settings/tokens", url.Values{"days": {"365"}}, nil); status != 400 || !strings.Contains(body, "F1 refused this") {
+		t.Errorf("token beyond the maximum: %d\n%s", status, body)
+	}
+	big := url.Values{"days": {"30"}, "description": {strings.Repeat("x", 70<<10)}}
+	if status, _, _ = fetch(t, b, "POST", w+"/-/settings/tokens", big, nil); status != 400 {
+		t.Errorf("oversized form: %d", status)
+	}
+	// Forms from other sites are refused.
+	if status, _, _ = fetch(t, b, "POST", w+"/-/settings/tokens", url.Values{"days": {"30"}}, http.Header{"Sec-Fetch-Site": {"cross-site"}}); status != 403 {
+		t.Errorf("cross-site token creation: %d", status)
+	}
+
+	// Revoking asks first.
+	status, _, body = fetch(t, b, "GET", w+"/-/settings/tokens/"+id+"/revoke", nil, nil)
+	if status != 200 || !strings.Contains(body, `action="/-/settings/tokens/`+id+`/revoke"`) {
+		t.Fatalf("confirm revoke: %d\n%s", status, body)
+	}
+	if status, path, _ = fetch(t, b, "POST", w+"/-/settings/tokens/"+id+"/revoke", url.Values{}, nil); status != 200 || path != "/-/settings/tokens" {
+		t.Fatalf("revoke: %d %s", status, path)
+	}
+	if _, err := f1client.New(e.url, secret).Me(ctx); f1client.Code(err) != f1client.CodeUnauthenticated {
+		t.Errorf("revoked token: %v", err)
+	}
+
+	// S3 keys: access key and secret shown once; revoked.
+	status, _, body = fetch(t, b, "POST", w+"/-/settings/s3keys", url.Values{}, nil)
+	keys, _ := e.alice.S3Keys(ctx)
+	if status != 200 || len(keys) != 2 || !strings.Contains(body, "Secret key") {
+		t.Fatalf("create S3 key: %d, %d keys\n%s", status, len(keys), body)
+	}
+	var newKey string
+	for _, k := range keys {
+		if k.AccessKey != e.s3keys["alice"].AccessKey {
+			newKey = k.AccessKey
+		}
+	}
+	if !strings.Contains(body, newKey) {
+		t.Errorf("the new access key is not shown")
+	}
+	if status, _, _ = fetch(t, b, "POST", w+"/-/settings/s3keys/"+newKey+"/revoke", url.Values{}, nil); status != 200 {
+		t.Fatalf("revoke S3 key: %d", status)
+	}
+	if keys, _ = e.alice.S3Keys(ctx); len(keys) != 1 {
+		t.Errorf("S3 keys after revoking: %+v", keys)
 	}
 }
