@@ -27,6 +27,12 @@ type Config struct {
 	PublicURL string `toml:"public_url"`
 	// F1URL is the URL of the F1 server's main listener.
 	F1URL string `toml:"f1_url"`
+	// CloneURL is the URL users reach F1's main listener at, for the
+	// clone commands of the Code menu. Default F1URL.
+	CloneURL string `toml:"clone_url"`
+	// S3URL is the URL users reach F1's S3 API at; "" leaves S3 out of
+	// the Code menu.
+	S3URL string `toml:"s3_url"`
 	// SessionIdle signs a user out after this long without a request.
 	// Default "8h".
 	SessionIdle string `toml:"session_idle"`
@@ -97,11 +103,24 @@ func LoadConfig(path string) (Config, error) {
 func (c *Config) Validate() error {
 	c.PublicURL = strings.TrimSuffix(c.PublicURL, "/")
 	c.F1URL = strings.TrimSuffix(c.F1URL, "/")
+	c.CloneURL = strings.TrimSuffix(c.CloneURL, "/")
+	c.S3URL = strings.TrimSuffix(c.S3URL, "/")
 	if err := checkURL("public_url", c.PublicURL); err != nil {
 		return err
 	}
 	if err := checkURL("f1_url", c.F1URL); err != nil {
 		return err
+	}
+	if c.CloneURL == "" {
+		c.CloneURL = c.F1URL
+	}
+	if err := checkURL("clone_url", c.CloneURL); err != nil {
+		return err
+	}
+	if c.S3URL != "" {
+		if err := checkURL("s3_url", c.S3URL); err != nil {
+			return err
+		}
 	}
 	if _, err := c.idle(); err != nil {
 		return err

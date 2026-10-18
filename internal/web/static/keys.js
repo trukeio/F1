@@ -1,5 +1,6 @@
-// Keyboard shortcuts and the file finder (ADR-0018, W3). Pages work
-// without this script; it only adds shortcuts.
+// Keyboard shortcuts, the file finder (ADR-0018, W3) and the Code menu's
+// copy buttons. Pages work without this script; it only adds shortcuts
+// and copying.
 "use strict";
 
 document.addEventListener("keydown", (e) => {
@@ -113,3 +114,23 @@ document.addEventListener("keydown", (e) => {
   });
   render();
 })();
+
+// The Code menu: copy buttons, and commands selected whole when clicked.
+for (const btn of document.querySelectorAll("button.copy[data-copy]")) {
+  const input = btn.parentElement.querySelector("input");
+  btn.hidden = false;
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(btn.dataset.copy);
+    } catch {
+      // No clipboard API (a plain-http page): leave it selected to copy.
+      input.select();
+      if (!document.execCommand("copy")) return;
+    }
+    btn.textContent = "Copied";
+    setTimeout(() => (btn.textContent = "Copy"), 2000);
+  });
+}
+for (const input of document.querySelectorAll(".copyline input")) {
+  input.addEventListener("focus", () => input.select());
+}

@@ -1,6 +1,8 @@
 package test
 
 import (
+	"archive/zip"
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
@@ -197,7 +199,9 @@ func TestWebPages(t *testing.T) {
 	e.createNS(t, "secret", "")
 	e.setACL(t, "proj", "user:alice", "", "read,write,lock")
 	e.setACL(t, "proj", "user:bob", "docs/", "read")
-	w := startWeb(t, e, nil, func(c *web.Config) { c.MaxRender = 1024 })
+	e.createNS(t, "code", "git")
+	e.setACL(t, "code", "user:alice", "", "read,write")
+	w := startWeb(t, e, nil, func(c *web.Config) { c.MaxRender = 1024; c.S3URL = "https://s3.example" })
 
 	readme := "# Project\n\nSee the [guide](docs/guide.md).\n\n![logo](logo.png)\n"
 	main1 := "package main\n\nfunc main() {\n\tprintln(\"old line\")\n}\n"
@@ -322,6 +326,59 @@ func TestWebPages(t *testing.T) {
 	page("/proj/tags", `href="/proj/tree/tags%2Fv1"`)
 	page("/proj/locks", "docs/guide.md", "user:alice")
 
+	// The Code menu: clone commands for the namespace's protocols, and a
+	// ZIP of the files at the ref shown.
+	page("/proj", `value="f1 clone `+e.url+` proj"`, `value="aws --endpoint-url https://s3.example s3 sync s3://proj proj"`,
+		`href="/proj/archive/main.zip"`)
+	if strings.Contains(body, "git clone") {
+		t.Error("the Code menu of a namespace without Git offers git clone")
+	}
+	page("/proj/tree/feature", `value="f1 clone --ref feature `+e.url+` proj"`, `href="/proj/archive/feature.zip"`)
+	put(t, e.alice, "code", "a.txt", "a", "new")
+	page("/code", `value="git clone `+e.url+`/git/code.git"`)
+	if body = page("/proj/tree/main/src"); strings.Contains(body, "Download ZIP") {
+		t.Error("a subdirectory has a Code menu")
+	}
+	zipFiles := func(b *http.Client, path, wantName string) map[string]string {
+		t.Helper()
+		resp, err := b.Get(w + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/zip" ||
+			resp.Header.Get("Content-Disposition") != "attachment; filename="+wantName+".zip" {
+			t.Fatalf("%s: %d %v", path, resp.StatusCode, resp.Header)
+		}
+		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		files := map[string]string{}
+		for _, f := range zr.File {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := io.ReadAll(rc)
+			rc.Close()
+			files[f.Name] = string(b)
+		}
+		return files
+	}
+	files := zipFiles(b, "/proj/archive/main.zip", "proj-main")
+	if len(files) != 7 || files["proj-main/src/main.go"] != main2 || files["proj-main/README.md"] != readme ||
+		files["proj-main/logo.png"] != png {
+		t.Errorf("ZIP of main: %d files: %v", len(files), files["proj-main/src/main.go"])
+	}
+	if files = zipFiles(b, "/proj/archive/tags%2Fv1.zip", "proj-tags-v1"); files["proj-tags-v1/src/main.go"] != main1 {
+		t.Errorf("ZIP of tags/v1: %v", files)
+	}
+	if status, _, _ := fetch(t, b, "GET", w+"/proj/archive/main", nil, nil); status != 404 {
+		t.Errorf("archive without .zip: %d", status)
+	}
+
 	// Unknown and unreadable namespaces look the same.
 	for _, p := range []string{"/nope", "/secret", "/secret/tree/main"} {
 		if status, _, _ := fetch(t, b, "GET", w+p, nil, nil); status != 404 {
@@ -342,6 +399,9 @@ func TestWebPages(t *testing.T) {
 	}
 	if status, _, _ := fetch(t, bb, "GET", w+"/proj/blob/main/src/main.go", nil, nil); status == 200 {
 		t.Error("bob reads src/main.go")
+	}
+	if files := zipFiles(bb, "/proj/archive/main.zip", "proj-main"); len(files) != 1 || files["proj-main/docs/guide.md"] != "# Guide\n" {
+		t.Errorf("bob's ZIP: %v", files)
 	}
 	page2 := func(path string) int { status, _, _ := fetch(t, bb, "GET", w+path, nil, nil); return status }
 	if s := page2("/proj/commits/main/docs/guide.md"); s != 200 {

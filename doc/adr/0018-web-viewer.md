@@ -77,6 +77,9 @@ Constraints:
       - Files and both sides of a diff are highlighted whole, so lines inside multi-line comments and strings are colored correctly. Tokens get CSS classes; `/-/highlight.css` holds GitHub's light and dark colors without backgrounds.
       - The last-commit column looks up at most 200 entries, 8 at a time, and gives up after 3 s; entries not done by then show no commit. F1 keeps the path filters it computes, so later visits are faster.
       - Shortcuts: `t` opens a file finder (`/{ns}/find/{ref}`, a fuzzy match over at most 20,000 paths, run in the browser), `y` replaces the URL with the page at its commit, `?` lists the shortcuts. Pages work without JavaScript; only the shortcuts and the finder need it.
+    - **W4:** a Code menu on a namespace's root page, as GitHub's.
+      - Clone commands for the protocols the namespace serves: `git clone` with `git = true`, `f1 clone` with `layout = tree` (with `--ref` on a branch other than the default), and `aws s3 sync` when `s3_url` is set (S3 serves the default branch). `clone_url` is F1's URL as users reach it, since `f1_url` is often internal; it defaults to `f1_url`. The tabs work without JavaScript; the copy buttons need it.
+      - **Download ZIP** at `/{ns}/archive/{ref}.zip`. f1web resolves the ref to a commit, lists the files at that commit and streams each into the ZIP, below a directory `{ns}-{ref}`, so the ZIP is consistent while writes continue. It holds only what the user can read; Git submodules are left out. This is not the admin archive of `/api/v1/ns/{ns}/archive`, which is a backup of the repository.
 
     Changes beyond viewing (editing a file with `F1-Parent`, branches, locks) need CSRF protection and are a separate decision. Blame, search and anonymous browsing are deferred. Anonymous browsing depends on anonymous reads in F1, which are still open in `TODO.md`.
 

@@ -48,6 +48,9 @@ func TestConfigValidate(t *testing.T) {
 	if c.PublicURL != "https://f1web.example" || !c.secure() {
 		t.Errorf("public URL %q, secure %v", c.PublicURL, c.secure())
 	}
+	if c.CloneURL != c.F1URL || c.S3URL != "" {
+		t.Errorf("clone URL %q, S3 URL %q", c.CloneURL, c.S3URL)
+	}
 	c.OIDC = &OIDCConfig{Issuer: "https://login.example/realms/acme", ClientID: "f1web"}
 	if err := c.Validate(); err != nil || c.OIDC.Name == "" || len(c.OIDC.Scopes) != 1 {
 		t.Errorf("OIDC defaults: %+v, %v", c.OIDC, err)
@@ -55,6 +58,8 @@ func TestConfigValidate(t *testing.T) {
 	for name, change := range map[string]func(*Config){
 		"no public URL":   func(c *Config) { c.PublicURL = "" },
 		"bad F1 URL":      func(c *Config) { c.F1URL = "f1.example:8080" },
+		"bad clone URL":   func(c *Config) { c.CloneURL = "git@f1.example" },
+		"bad S3 URL":      func(c *Config) { c.S3URL = "s3.example" },
 		"bad idle":        func(c *Config) { c.SessionIdle = "-1h" },
 		"bad log format":  func(c *Config) { c.Log.Format = "xml" },
 		"no client ID":    func(c *Config) { c.OIDC = &OIDCConfig{Issuer: "https://login.example"} },

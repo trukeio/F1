@@ -7,6 +7,11 @@ listen = "127.0.0.1:8090"
 public_url = "https://f1.example.com"
 # The F1 server's main listener.
 f1_url = "http://127.0.0.1:8080"
+# The URLs users reach F1's main listener and S3 API at, for the clone
+# commands of the Code menu. clone_url defaults to f1_url; without s3_url
+# the menu offers no S3 command.
+# clone_url = "https://f1-api.example.com"
+# s3_url = "https://s3.example.com"
 # Sign users out after this long without a request.
 session_idle = "8h"
 # The largest file, in bytes, that pages render; larger ones are offered

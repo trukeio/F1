@@ -29,6 +29,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{ns}/tree/{ref}/{path...}", s.page(s.tree))
 	mux.HandleFunc("GET /{ns}/blob/{ref}/{path...}", s.page(s.blob))
 	mux.HandleFunc("GET /{ns}/raw/{ref}/{path...}", s.page(s.raw))
+	mux.HandleFunc("GET /{ns}/archive/{file}", s.page(s.archive))
 	mux.HandleFunc("GET /{ns}/commits/{ref}", s.page(s.commits))
 	mux.HandleFunc("GET /{ns}/commits/{ref}/{path...}", s.page(s.commits))
 	mux.HandleFunc("GET /{ns}/commit/{hash}", s.page(s.commit))
@@ -60,7 +61,8 @@ type treePage struct {
 	Entries    []entry
 	Next       string // After value of the next page
 	Last       *f1client.Commit
-	Empty      bool // the namespace has no commits yet
+	Empty      bool      // the namespace has no commits yet
+	Code       *codeMenu // the root directory's Code button
 	ReadmeName string
 	ReadmeHTML template.HTML // Markdown README
 	ReadmeText string        // other README
@@ -110,6 +112,9 @@ func (s *Server) showTree(w http.ResponseWriter, r *http.Request, rq *request, v
 		return nil
 	}
 	p.Entries, p.Next = entries, next
+	if v.Path == "" {
+		p.Code = s.codeMenu(v)
+	}
 	if !v.RefIsCommit() {
 		v.Permalink = pageURL(v.NS.Name, "tree", commit, v.Path)
 	}

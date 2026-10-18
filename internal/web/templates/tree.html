@@ -3,7 +3,7 @@
 {{if .Empty}}
 <div class="box"><p>This namespace is empty.</p></div>
 {{else}}
-<div class="bar">{{template "refpicker" .}}{{template "crumbs" .}}</div>
+<div class="bar">{{template "refpicker" .}}{{template "crumbs" .}}{{with .Code}}{{template "codemenu" .}}{{end}}</div>
 <div class="box listing">
   {{with .Last}}
   <div class="lastcommit">
@@ -36,3 +36,28 @@
 {{end}}
 {{end}}
 {{end}}{{end}}
+
+{{define "codemenu"}}
+<details class="picker code">
+  <summary class="btn primary">{{template "icon-code"}} Code</summary>
+  <div class="menu">
+    {{if .Clones}}
+    <div class="menuhead">Clone</div>
+    <div class="clone">
+      {{range $i, $c := .Clones}}
+      <input type="radio" name="clone" id="clone-{{.ID}}"{{if eq $i 0}} checked{{end}}>
+      <label for="clone-{{.ID}}">{{.Name}}</label>
+      <div class="panel">
+        <div class="copyline">
+          <input type="text" class="mono" readonly value="{{.Command}}" aria-label="{{.Name}} clone command">
+          <button type="button" class="btn copy" data-copy="{{.Command}}" title="Copy to clipboard" hidden>Copy</button>
+        </div>
+        <p class="muted">{{.Note}}</p>
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+    <a class="zip" href="{{.ZIP}}" download>{{template "icon-zip"}} Download ZIP</a>
+  </div>
+</details>
+{{end}}

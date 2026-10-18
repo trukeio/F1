@@ -70,6 +70,7 @@ cat > "$work/f1web.toml" <<EOF
 listen = "127.0.0.1:$port"
 public_url = "http://127.0.0.1:$port"
 f1_url = "http://127.0.0.1:$f1port"
+s3_url = "http://127.0.0.1:$s3port"
 [log]
 level = "warn"
 EOF
