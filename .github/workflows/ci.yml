@@ -13,11 +13,14 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    env:
+      F1_REQUIRE_SVN: 1 # the SVN importer's tests (ADR-0019)
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - run: sudo apt-get update -q && sudo apt-get install -q -y --no-install-recommends subversion
       - run: make ci
 
   # External clients: AWS CLI, rclone, mc (phase 4) and Git LFS (phase 6).

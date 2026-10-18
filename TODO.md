@@ -20,6 +20,6 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
 - [ ] **Import Subversion repositories.** An importer that reads an `svnadmin dump` or `svnrdump` stream and writes one F1 commit per revision, keeping authors, dates and revision numbers, onto refs from the trunk/branches/tags layout (ADR-0017 recommends it). Converting to Git first suits code, not repositories of large binaries.
   - Designed in ADR-0019: `f1d repo import-svn`, run on the server host; dump formats 2 and 3; supported properties mapped, the rest reported; incremental imports until the switch.
   - [x] S0: ADR-0019.
-  - [ ] S1: dump reader and svndiff.
+  - [x] S1: dump reader and svndiff (`internal/svndump`).
   - [ ] S2: layout mapping, commits, `f1d repo import-svn`, acceptance test against `svn` 1.14.
   - [ ] S3: incremental imports, report, `--dry-run`, manual section.

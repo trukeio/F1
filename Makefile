@@ -51,6 +51,8 @@ fuzz:
 	go test ./internal/api/git -run '^$$' -fuzz FuzzReadPack -fuzztime $(FUZZTIME)
 	go test ./internal/client/textmerge -run '^$$' -fuzz FuzzMerge -fuzztime $(FUZZTIME)
 	go test ./internal/api/git -run '^$$' -fuzz FuzzDelta -fuzztime $(FUZZTIME)
+	go test ./internal/svndump -run '^$$' -fuzz FuzzApply -fuzztime $(FUZZTIME)
+	go test ./internal/svndump -run '^$$' -fuzz FuzzDump -fuzztime $(FUZZTIME)
 
 ci: fmt-check vet staticcheck test smoke
 
