@@ -282,38 +282,41 @@ func nsCmd(ctx context.Context, cfg config.Config, sub string, a []string, prese
 			if err := admin.Create(ctx, ns, preset); err != nil {
 				return fail(err)
 			}
-		} else {
-			pc := policy.Default()
-			var err error
-			if preset != "" {
-				if pc, err = policy.Preset(preset); err != nil {
-					return fail(err)
-				}
-			}
-			if err := policy.ValidNamespace(ns); err != nil {
-				return fail(err)
-			}
-			path := filepath.Join(cfg.Server.DataDir, server.ReposDir, ns)
-			if err := repo.Create(path, pc); err != nil {
-				return fail(err)
-			}
-			db, err := serverdb.Open(ctx, filepath.Join(cfg.Server.DataDir, server.ServerDB))
-			if err != nil {
-				return fail(err)
-			}
-			defer db.Close()
-			meta, err := repodir.ReadMeta(path)
-			if err != nil {
-				return fail(err)
-			}
-			if err := db.Register(ctx, ns, meta.UUID); err != nil {
-				return fail(err)
-			}
+		} else if err := createOffline(ctx, cfg, ns, preset); err != nil {
+			return fail(err)
 		}
 		fmt.Fprintf(stdout, "%s created\n", ns)
 		return 0
 	}
 	return usage()
+}
+
+// createOffline creates and registers a namespace while no server runs.
+func createOffline(ctx context.Context, cfg config.Config, ns, preset string) error {
+	pc := policy.Default()
+	var err error
+	if preset != "" {
+		if pc, err = policy.Preset(preset); err != nil {
+			return err
+		}
+	}
+	if err := policy.ValidNamespace(ns); err != nil {
+		return err
+	}
+	path := filepath.Join(cfg.Server.DataDir, server.ReposDir, ns)
+	if err := repo.Create(path, pc); err != nil {
+		return err
+	}
+	db, err := serverdb.Open(ctx, filepath.Join(cfg.Server.DataDir, server.ServerDB))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	meta, err := repodir.ReadMeta(path)
+	if err != nil {
+		return err
+	}
+	return db.Register(ctx, ns, meta.UUID)
 }
 
 // aclFile is the TOML format of export-acl and import-acl.

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/trukeio/f1/internal/gc"
 	"github.com/trukeio/f1/internal/policy"
 	"github.com/trukeio/f1/internal/repo"
+	"github.com/trukeio/f1/internal/svnimport"
 )
 
 // AdminSocket is the name of the admin socket in the data directory.
@@ -218,7 +220,63 @@ func adminHandler(m *Manager, gcGrace time.Duration, log *slog.Logger) http.Hand
 		}
 		reply(w, info, err)
 	})
+	mux.HandleFunc("POST /repos/{ns}/import-svn", func(w http.ResponseWriter, r *http.Request) {
+		var req SVNImportRequest
+		if err := json.Unmarshal([]byte(r.URL.Query().Get("options")), &req); err != nil {
+			reply(w, nil, fmt.Errorf("server: import-svn: options: %w", err))
+			return
+		}
+		ns := r.PathValue("ns")
+		rp, err := m.Get(ns)
+		if err != nil {
+			reply(w, nil, err)
+			return
+		}
+		// The dump streams in while progress streams out.
+		rc := http.NewResponseController(w)
+		if err := rc.EnableFullDuplex(); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		last := time.Now()
+		rep, err := svnimport.Import(r.Context(), rp, r.Body, svnimport.Options{
+			Layout:  req.Layout,
+			Authors: req.Authors,
+			Progress: func(rev int) {
+				if time.Since(last) >= time.Second {
+					last = time.Now()
+					enc.Encode(SVNImportLine{Revision: rev})
+					rc.Flush()
+				}
+			},
+		})
+		line := SVNImportLine{Report: rep}
+		if err != nil {
+			line.Error = err.Error()
+			log.Warn("svn import failed", "namespace", ns, "err", err)
+		} else {
+			log.Info("svn import", "namespace", ns, "revisions", rep.Revisions, "commits", rep.Commits, "bytes", rep.Bytes)
+		}
+		enc.Encode(line)
+	})
 	return mux
+}
+
+// SVNImportRequest holds the options of an SVN import over the admin
+// socket; the dump is the request body.
+type SVNImportRequest struct {
+	Layout  svnimport.Layout       `json:"layout"`
+	Authors map[string]repo.Person `json:"authors,omitempty"`
+}
+
+// SVNImportLine is one line of an SVN import's response: progress, or at
+// the end the report and any error.
+type SVNImportLine struct {
+	Revision int               `json:"revision,omitempty"`
+	Report   *svnimport.Report `json:"report,omitempty"`
+	Error    string            `json:"error,omitempty"`
 }
 
 // GCRequest asks for a garbage collection over the admin socket.
@@ -309,6 +367,50 @@ func (c *AdminClient) Backup(ctx context.Context, dir string) (BackupReport, err
 func (c *AdminClient) GC(ctx context.Context, ns string, req GCRequest) (*gc.Result, error) {
 	var res gc.Result
 	return &res, c.call(ctx, http.MethodPost, "/repos/"+ns+"/gc", req, &res)
+}
+
+// ImportSVN streams an SVN dump to the server, which imports it into ns
+// (ADR-0019). progress, if set, is called with the revision reached about
+// once a second.
+func (c *AdminClient) ImportSVN(ctx context.Context, ns string, req SVNImportRequest, dump io.Reader, progress func(int)) (*svnimport.Report, error) {
+	opts, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	u := "http://admin/repos/" + url.PathEscape(ns) + "/import-svn?options=" + url.QueryEscape(string(opts))
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, dump)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(hreq)
+	if err != nil {
+		return nil, fmt.Errorf("server: admin socket: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		json.NewDecoder(resp.Body).Decode(&e)
+		return nil, fmt.Errorf("server: %s", e.Error)
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var line SVNImportLine
+		if err := dec.Decode(&line); err != nil {
+			return nil, fmt.Errorf("server: import-svn: the server ended without a report: %w", err)
+		}
+		if line.Report == nil && line.Error == "" {
+			if progress != nil {
+				progress(line.Revision)
+			}
+			continue
+		}
+		if line.Error != "" {
+			return line.Report, errors.New(line.Error)
+		}
+		return line.Report, nil
+	}
 }
 
 // Archive asks the server to write an archive of ns to path (absolute,

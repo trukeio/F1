@@ -25,6 +25,12 @@ func (r *Repo) Stat(ctx context.Context, commit hash.Hash, path string) (object.
 	return r.statTree(ctx, root, path)
 }
 
+// StatTree returns the entry at path in the tree rooted at root, or
+// ErrNotFound.
+func (r *Repo) StatTree(ctx context.Context, root hash.Hash, path string) (object.Entry, error) {
+	return r.statTree(ctx, root, path)
+}
+
 func (r *Repo) statTree(ctx context.Context, root hash.Hash, path string) (object.Entry, error) {
 	if err := r.CheckPath(path); err != nil {
 		return object.Entry{}, err

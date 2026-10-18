@@ -27,6 +27,10 @@ Commands:
   archive <ns> <file.zip>          write a repository archive; writes may continue
   import <file.zip|dir>            import a repository archive or directory
          [--name <ns>] [--new-uuid]
+  import-svn <ns> <dump|->         import a Subversion dump (svnadmin dump,
+         [--authors <file.toml>]   svnrdump dump; - reads standard input)
+         [--trunk <path>] [--branches <path>]... [--tags <path>]... [--root]
+         [--create <preset>]
   attach <ns>                      register the directory repos/<ns>
   detach <ns>                      unregister a repository and leave its directory ready to move
   rebuild-cache <ns> | --dir <dir> rebuild cache.db (offline)
@@ -50,13 +54,20 @@ func repoCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	name := fs.String("name", "", "import: namespace name (default: archive root or directory name)")
 	newUUID := fs.Bool("new-uuid", false, "import: give the repository a new UUID")
 	dir := fs.String("dir", "", "rebuild-cache: repository directory")
+	var svn svnFlags
+	fs.StringVar(&svn.authors, "authors", "", "import-svn: TOML file mapping SVN users to \"Name <email>\"")
+	fs.StringVar(&svn.layout.Trunk, "trunk", "", "import-svn: the trunk directory (default trunk)")
+	fs.Var((*multi)(&svn.layout.Branches), "branches", "import-svn: a directory of branches (default branches; repeatable)")
+	fs.Var((*multi)(&svn.layout.Tags), "tags", "import-svn: a directory of tags (default tags; repeatable)")
+	fs.BoolVar(&svn.layout.Root, "root", false, "import-svn: import the whole repository as the default branch")
+	fs.StringVar(&svn.create, "create", "", "import-svn: create the namespace with this preset (svn, git, ...)")
 	if err := parseFlags(fs, args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	nargs := map[string]int{"list": 0, "freeze": 1, "unfreeze": 1, "archive": 2, "import": 1, "attach": 1, "detach": 1, "rebuild-cache": -1,
+	nargs := map[string]int{"list": 0, "freeze": 1, "unfreeze": 1, "archive": 2, "import": 1, "import-svn": 2, "attach": 1, "detach": 1, "rebuild-cache": -1,
 		"export-acl": -1, "import-acl": 2}
 	want, ok := nargs[cmd]
 	if !ok {
@@ -194,6 +205,12 @@ func repoCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return fail(err)
 		}
 		fmt.Fprintf(stdout, "%s: archived %d refs, %d packs (%d bytes) to %s\n", ns, len(info.Refs), info.Packs, info.Bytes, out)
+		return 0
+
+	case "import-svn":
+		if err := importSVN(ctx, cfg, admin, running, fs.Arg(0), fs.Arg(1), svn, stdout, stderr); err != nil {
+			return fail(err)
+		}
 		return 0
 
 	case "import":

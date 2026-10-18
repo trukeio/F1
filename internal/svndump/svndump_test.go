@@ -8,14 +8,13 @@ import (
 	"errors"
 	"io"
 	"maps"
-	"math/rand"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/trukeio/f1/internal/svntest"
 )
 
 func appendVarint(b []byte, v uint64) []byte {
@@ -257,101 +256,6 @@ func TestReaderErrors(t *testing.T) {
 	}
 }
 
-// svnRepo builds a repository with the svn client: texts and binaries, a
-// file larger than a delta window changed in its middle, properties, a
-// symlink, a branch made with changes, a replace, a deleted branch, a tag
-// and a move. It returns the repository directory and its youngest
-// revision.
-func svnRepo(t *testing.T) (string, int) {
-	requireSvn(t, "svn", "svnadmin", "svnlook")
-	dir := t.TempDir()
-	repo, wc, cfg := filepath.Join(dir, "repo"), filepath.Join(dir, "wc"), filepath.Join(dir, "cfg")
-	run(t, dir, "svnadmin", "create", repo)
-	svn := func(args ...string) { run(t, wc, "svn", append([]string{"--config-dir", cfg, "-q"}, args...)...) }
-	run(t, dir, "svn", "--config-dir", cfg, "-q", "checkout", "file://"+repo, wc)
-	write := func(p string, data []byte) {
-		os.MkdirAll(filepath.Dir(filepath.Join(wc, p)), 0o755)
-		if err := os.WriteFile(filepath.Join(wc, p), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit := func(msg string) {
-		svn("commit", "-m", msg)
-		svn("update")
-	}
-	big := make([]byte, 300<<10)
-	rand.New(rand.NewSource(1)).Read(big)
-
-	svn("mkdir", "trunk", "branches", "tags")
-	write("trunk/a.txt", []byte("hello\n"))
-	write("trunk/big.bin", big)
-	write("trunk/run.sh", []byte("#!/bin/sh\necho hi\n"))
-	write("trunk/board.brd", []byte("board v1"))
-	if err := os.Symlink("a.txt", filepath.Join(wc, "trunk/link")); err != nil {
-		t.Fatal(err)
-	}
-	svn("add", "trunk/a.txt", "trunk/big.bin", "trunk/run.sh", "trunk/board.brd", "trunk/link")
-	svn("propset", "svn:executable", "*", "trunk/run.sh")
-	svn("propset", "svn:needs-lock", "*", "trunk/board.brd")
-	svn("propset", "svn:mime-type", "application/octet-stream", "trunk/board.brd")
-	commit("r1: initial")
-
-	write("trunk/a.txt", []byte("hello\nworld\n"))
-	copy(big[150<<10:], "an edit in the middle of the big file")
-	write("trunk/big.bin", big)
-	commit("r2: edits")
-
-	svn("copy", "trunk", "branches/x")
-	write("branches/x/a.txt", []byte("on the branch\n"))
-	commit("r3: branch with a change")
-
-	svn("propdel", "svn:needs-lock", "trunk/board.brd")
-	svn("delete", "trunk/run.sh")
-	commit("r4: property deleted, file deleted")
-
-	svn("delete", "trunk/a.txt")
-	write("trunk/a.txt", []byte("replaced\n"))
-	svn("add", "trunk/a.txt")
-	commit("r5: replace")
-
-	svn("copy", "trunk", "tags/v1")
-	svn("delete", "branches/x")
-	write("trunk/sub/deep.txt", []byte("deep\n"))
-	svn("add", "trunk/sub")
-	commit("r6: tag, delete branch, new directory")
-
-	svn("move", "trunk/sub", "trunk/sub2")
-	commit("r7: move")
-	return repo, 7
-}
-
-// requireSvn skips the test if a Subversion tool is missing, or fails it
-// if F1_REQUIRE_SVN is set (CI installs Subversion).
-func requireSvn(t *testing.T, tools ...string) {
-	t.Helper()
-	for _, tool := range tools {
-		if _, err := exec.LookPath(tool); err != nil {
-			if os.Getenv("F1_REQUIRE_SVN") != "" {
-				t.Fatal(tool + " is not installed")
-			}
-			t.Skip(tool + " is not installed")
-		}
-	}
-}
-
-func run(t *testing.T, dir, name string, args ...string) []byte {
-	t.Helper()
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("%s %v: %v\n%s", name, args, err, stderr.Bytes())
-	}
-	return out
-}
-
 // tree is a model of one revision: file contents by path, and directories
 // (with a nil content).
 type tree map[string][]byte
@@ -452,21 +356,22 @@ func replay(t *testing.T, dump []byte) ([]tree, []*Node, *Reader) {
 }
 
 func TestSvnDumps(t *testing.T) {
-	repo, youngest := svnRepo(t)
+	r, youngest := svntest.Standard(t)
+	repo := r.Dir
 	dir := filepath.Dir(repo)
-	uuid := strings.TrimSpace(string(run(t, dir, "svnlook", "uuid", repo)))
+	uuid := strings.TrimSpace(string(svntest.Run(t, dir, "svnlook", "uuid", repo)))
 	for _, tc := range []struct {
 		name    string
 		version int
 		dump    func() []byte
 	}{
-		{"svnadmin", 2, func() []byte { return run(t, dir, "svnadmin", "dump", "-q", repo) }},
-		{"svnadmin --deltas", 3, func() []byte { return run(t, dir, "svnadmin", "dump", "-q", "--deltas", repo) }},
-		{"svnrdump", 3, func() []byte { return run(t, dir, "svnrdump", "dump", "-q", "file://"+repo) }},
+		{"svnadmin", 2, func() []byte { return svntest.Run(t, dir, "svnadmin", "dump", "-q", repo) }},
+		{"svnadmin --deltas", 3, func() []byte { return svntest.Run(t, dir, "svnadmin", "dump", "-q", "--deltas", repo) }},
+		{"svnrdump", 3, func() []byte { return svntest.Run(t, dir, "svnrdump", "dump", "-q", "file://"+repo) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.name == "svnrdump" {
-				requireSvn(t, "svnrdump")
+				svntest.Require(t, "svnrdump")
 			}
 			trees, nodes, r := replay(t, tc.dump())
 			if r.Version != tc.version || r.UUID != uuid {
@@ -489,7 +394,7 @@ func checkRevision(t *testing.T, repo string, rev int, model tree) {
 	dir := filepath.Dir(repo)
 	r := strconv.Itoa(rev)
 	var paths []string
-	for line := range strings.SplitSeq(string(run(t, dir, "svnlook", "tree", "--full-paths", "-r", r, repo)), "\n") {
+	for line := range strings.SplitSeq(string(svntest.Run(t, dir, "svnlook", "tree", "--full-paths", "-r", r, repo)), "\n") {
 		if line != "" && line != "/" {
 			paths = append(paths, strings.TrimSuffix(line, "/"))
 		}
@@ -507,7 +412,7 @@ func checkRevision(t *testing.T, repo string, rev int, model tree) {
 		if content == nil {
 			continue
 		}
-		if got := run(t, dir, "svnlook", "cat", "-r", r, repo, p); !bytes.Equal(got, content) {
+		if got := svntest.Run(t, dir, "svnlook", "cat", "-r", r, repo, p); !bytes.Equal(got, content) {
 			t.Fatalf("r%d %s: %d bytes, svnlook has %d", rev, p, len(content), len(got))
 		}
 	}

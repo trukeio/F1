@@ -23,6 +23,7 @@ const (
 	OpPut    Op = iota + 1 // set Path to Entry
 	OpDelete               // remove Path; a missing path is a no-op
 	OpRename               // move the entry at From to Path
+	OpRemove               // remove Path, a file or a directory; a missing path is a no-op
 )
 
 // Change is one path change in a commit. For OpPut, Entry.Name is ignored.
@@ -140,7 +141,7 @@ func (r *Repo) commitOn(ctx context.Context, ref string, parent, base hash.Hash,
 	if base != parent {
 		reason = "commit (rebased)"
 	}
-	opts := UpdateOptions{Principal: req.Principal, Reason: reason, CheckPath: req.CheckPath, skipLocks: req.skipLocks}
+	opts := UpdateOptions{Principal: req.Principal, Reason: reason, CheckPath: req.CheckPath, SkipLocks: req.skipLocks}
 	if err := r.updateRefs(ctx, []RefUpdate{{Ref: ref, Old: base, New: h}}, opts); err != nil {
 		return hash.Zero, err
 	}
@@ -285,6 +286,31 @@ func gitPerson(p Person, t time.Time) object.Person {
 	return object.Person{Name: []byte(p.Name), Email: []byte(p.Email), Time: t.Unix(), TZ: "+0000"}
 }
 
+// EditTree applies changes to the tree rooted at root and returns the new
+// root, without writing a commit. Importers use it to build trees step by
+// step, then Put the commit and move refs with UpdateRefs. The changes are
+// applied as in a commit: for repeated paths the last one wins, so a
+// change that depends on an earlier one goes in a later call.
+func (r *Repo) EditTree(ctx context.Context, root hash.Hash, changes []Change) (hash.Hash, error) {
+	end, err := r.beginWrite()
+	if err != nil {
+		return hash.Zero, err
+	}
+	defer end()
+	return r.applyChanges(ctx, root, changes)
+}
+
+// CommitTree returns the root tree of a commit, or a stored empty tree for
+// the zero hash.
+func (r *Repo) CommitTree(ctx context.Context, commit hash.Hash) (hash.Hash, error) {
+	end, err := r.beginWrite()
+	if err != nil {
+		return hash.Zero, err
+	}
+	defer end()
+	return r.commitTree(ctx, commit)
+}
+
 // commitTree returns the root tree of a commit, or a stored empty tree for
 // the zero hash.
 func (r *Repo) commitTree(ctx context.Context, commit hash.Hash) (hash.Hash, error) {
@@ -347,6 +373,8 @@ func (r *Repo) applyChanges(ctx context.Context, base hash.Hash, changes []Chang
 			resolved = append(resolved, pathChange{path: c.Path, entry: &e})
 		case OpDelete:
 			resolved = append(resolved, pathChange{path: c.Path})
+		case OpRemove:
+			resolved = append(resolved, pathChange{path: c.Path, removeDir: true})
 		case OpRename:
 			if err := r.CheckPath(c.From); err != nil {
 				return hash.Zero, err

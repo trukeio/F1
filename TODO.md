@@ -21,5 +21,5 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - Designed in ADR-0019: `f1d repo import-svn`, run on the server host; dump formats 2 and 3; supported properties mapped, the rest reported; incremental imports until the switch.
   - [x] S0: ADR-0019.
   - [x] S1: dump reader and svndiff (`internal/svndump`).
-  - [ ] S2: layout mapping, commits, `f1d repo import-svn`, acceptance test against `svn` 1.14.
+  - [x] S2: layout mapping, commits, `f1d repo import-svn`, acceptance test against `svn` 1.14 (`internal/svnimport`).
   - [ ] S3: incremental imports, report, `--dry-run`, manual section.

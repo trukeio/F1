@@ -239,7 +239,10 @@ type UpdateOptions struct {
 	// (the protocol layer's write ACL check); an error rejects the update.
 	CheckPath func(ref string, c PathChange) error
 
-	skipLocks bool // the group committer checked locks per request
+	// SkipLocks skips the lock policy: for the group committer, which
+	// checked locks per request, and for importers writing history that
+	// no user is editing (ADR-0019). Protocol layers never set it.
+	SkipLocks bool
 }
 
 // UpdateRefs applies ref updates atomically: all old values are checked,
@@ -276,7 +279,7 @@ func (r *Repo) updateRefs(ctx context.Context, updates []RefUpdate, opts UpdateO
 	release := r.store.Guard()
 	defer release()
 	mode, _ := policy.ParseLocks(r.meta.Locks)
-	checkLocks := mode.Mode != "off" && !opts.skipLocks
+	checkLocks := mode.Mode != "off" && !opts.SkipLocks
 	seen := map[string]bool{}
 	checks := make([]*refCheck, len(updates))
 	for i := range updates {

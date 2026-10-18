@@ -71,7 +71,9 @@ f1d repo import-svn <ns> <dump|-> [--authors <file>] [--trunk <path>] [--branche
 
 ### Commits
 
-- **One revision makes one commit on each ref it changes.** All its ref updates are applied as one multi-ref update, as an atomic Git push is.
+- **One revision makes one commit on each ref it changes.**
+- **Refs move at checkpoints:** every 1,000 revisions or 1 GiB of content, and at the end. Each checkpoint is one atomic multi-ref update, as a Git push is, and never splits a revision. One update per revision would seal one pack per revision, because every ref update makes the objects it needs durable first. An interrupted import loses at most the revisions since the last checkpoint.
+- **The lock policy is not applied.** The import writes history that no user is editing. A namespace with `locks = required:*.brd` would otherwise refuse every revision that changed a `.brd` file.
 - Revisions that change nothing inside the layout, revision 0, and revisions that only change revision properties make no commit.
 - **Author** from `svn:author`, through the authors file:
 
@@ -81,7 +83,7 @@ f1d repo import-svn <ns> <dump|-> [--authors <file>] [--trunk <path>] [--branche
 
   An author missing from the file becomes `jdoe <jdoe@<repository UUID>>`, as git-svn does, and is listed in the report.
 - **Committer** is the author. **Time** comes from `svn:date`, in UTC.
-- **Principal.** `refs.log` records the principal that ran the import.
+- **Principal.** `refs.log` records `system:svn-import`.
 - **Message** from `svn:log`, followed by two trailers:
 
   ```
