@@ -19,6 +19,12 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] W3: syntax highlighting, last commit per directory entry, keyboard shortcuts.
   - [x] W4: Code menu with clone commands (Git, `f1`, S3) and Download ZIP.
 - [ ] **Design a web application to administer F1.** Manage users and ACLs, and let users get their own tokens and S3 keys, in a browser instead of with `f1d` and the API. Decide whether it is part of `f1web` or a separate server, which administrator rights it needs and how it gets them while calling the API as the signed-in user (ADR-0018, item 3), and what CSRF protection its changes need.
+  - Designed in ADR-0020: pages in `f1web` that call new native API endpoints as the signed-in user; CSRF protection by `http.CrossOriginProtection`; recent sign-in for administration.
+  - [x] A0: ADR-0020.
+  - [ ] A1: self-service token API, groups for OIDC principals' tokens, `token_max_ttl`; CSRF protection in `f1web`.
+  - [ ] A2: `/-/settings` pages.
+  - [ ] A3: ACL API, guards, security events; namespace access page; recent sign-in.
+  - [ ] A4: server administration API and `/-/admin` pages; manual.
 - [x] **Import Subversion repositories.** An importer that reads an `svnadmin dump` or `svnrdump` stream and writes one F1 commit per revision, keeping authors, dates and revision numbers, onto refs from the trunk/branches/tags layout (ADR-0017 recommends it). Converting to Git first suits code, not repositories of large binaries.
   - Designed in ADR-0019: `f1d repo import-svn`, run on the server host; dump formats 2 and 3; supported properties mapped, the rest reported; incremental imports until the switch.
   - [x] S0: ADR-0019.
