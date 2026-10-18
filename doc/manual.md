@@ -73,7 +73,7 @@ Version 1 runs on one Linux, macOS or BSD host with local disk, and SQLite for m
 
 **Retention.** How much history a namespace keeps: `all`, `last:N` commits per ref, `days:N`, or `none` (only the current state, as a plain S3 bucket). Older history is removed by garbage collection.
 
-**Autocommit.** In an autocommit namespace, writes do not name the commit they are based on: concurrent writes are batched into one commit each few milliseconds (group commit). This is how S3 buckets work. Without autocommit, every write must say which commit it is based on, and fails if the branch has moved.
+**Autocommit.** In an autocommit namespace, writes do not name the commit they are based on: concurrent writes are batched into one commit each few milliseconds (group commit). This is how S3 buckets work. Without autocommit, every write must say which commit it is based on, and fails if the branch has moved. Subversion commits are not autocommit: like `f1 push`, each names the version it is based on, and is refused only if one of its own files changed since (§2.2).
 
 **Lock.** A claim by one user on one path of a branch. While it is held, nobody else can commit a change to that path, through any protocol.
 
