@@ -68,6 +68,7 @@ func secretBox(title string, lines ...string) map[string]any {
 // confirmPage asks before a destructive action (item 10).
 type confirmPage struct {
 	Repo     *repoView // a namespace's page; nil for the user's settings
+	Admin    bool      // an administration page
 	Tab      string
 	Question string
 	Detail   string

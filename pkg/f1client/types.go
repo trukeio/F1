@@ -191,6 +191,7 @@ type Me struct {
 // created.
 type S3Key struct {
 	AccessKey string    `json:"access_key"`
+	Principal string    `json:"principal,omitempty"` // in administration listings
 	Secret    string    `json:"secret,omitempty"`
 	Created   time.Time `json:"created"`
 }
@@ -211,6 +212,34 @@ type Token struct {
 type CreateTokenRequest struct {
 	Description string    `json:"description,omitempty"`
 	Expires     time.Time `json:"expires"`
+}
+
+// Principal is a user known to F1: a local user, or an OIDC user that has
+// used F1 (ADR-0020).
+type Principal struct {
+	Name   string `json:"name"`   // "user:<name>"
+	Issuer string `json:"issuer"` // "local", or the OIDC provider's name
+	// Groups are a local user's groups, or an OIDC user's groups at their
+	// last token use, recorded at GroupsSeen.
+	Groups     []string   `json:"groups"`
+	GroupsSeen *time.Time `json:"groups_seen,omitempty"`
+	Disabled   bool       `json:"disabled"`
+	Created    time.Time  `json:"created"`
+}
+
+// CreateUserRequest adds a local user. Names may omit "user:" and
+// "group:".
+type CreateUserRequest struct {
+	Name   string   `json:"name"`
+	Groups []string `json:"groups,omitempty"`
+}
+
+// AdminTokenRequest creates a token for any principal. A nil Expires
+// never expires.
+type AdminTokenRequest struct {
+	Principal   string     `json:"principal"`
+	Description string     `json:"description,omitempty"`
+	Expires     *time.Time `json:"expires,omitempty"`
 }
 
 // ACLEntry grants Perms (read, write, lock, admin) on the paths of a

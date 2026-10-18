@@ -1,5 +1,10 @@
 {{define "content"}}{{with .Data}}
 {{if .Repo}}{{template "repohead" .Repo}}{{template "confirmform" .}}
+{{else if .Admin}}
+<div class="settings">
+{{template "adminnav" .Tab}}
+<section>{{template "confirmform" .}}</section>
+</div>
 {{else}}
 <div class="settings">
 {{template "settingsnav" .}}

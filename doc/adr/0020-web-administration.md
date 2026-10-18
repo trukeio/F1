@@ -66,7 +66,7 @@ Several of the decisions below were discussed and rejected first: moving identit
    - A namespace administrator can grant `admin` in that namespace, but nothing on `*`.
 
 7. **Guards.**
-   - No change may leave the server without an enabled server administrator: removing or narrowing the last `admin` entry on `*` with prefix `""`, or disabling the last user who has it, gives 409. Groups count when they have at least one enabled local member.
+   - No change may leave the server without an enabled server administrator: removing or narrowing the last `admin` entry on `*` with prefix `""`, disabling the last user who has it, or taking them out of the group that gives it, gives 409. Groups count when they have at least one enabled local member, or are among the recorded groups of an enabled OIDC user. A server that has no countable administrator already (for example, administrators in an OIDC group whose members have not used F1 yet) does not block other changes.
    - A caller cannot disable themselves.
    - Every change through these endpoints is logged as a security event (`security: admin change`), with the caller, the operation and its target, as authentication failures are today. Secrets are never logged.
 

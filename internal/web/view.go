@@ -203,6 +203,7 @@ func templateFuncs() template.FuncMap {
 		"hasPrefix":  strings.HasPrefix,
 		"compareURL": compareURL,
 		"secretBox":  secretBox,
+		"userURL":    userURL,
 		"parent": func(p string) string {
 			if d := path.Dir(p); d != "." {
 				return d

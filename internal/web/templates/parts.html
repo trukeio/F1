@@ -88,3 +88,13 @@
   {{end}}
 </div>
 {{end}}
+
+{{define "adminnav"}}
+<nav class="sidenav">
+  <a href="/-/admin/users"{{if eq . "users"}} class="sel"{{end}}>Users</a>
+  <a href="/-/admin/tokens"{{if eq . "tokens"}} class="sel"{{end}}>Tokens</a>
+  <a href="/-/admin/s3keys"{{if eq . "s3keys"}} class="sel"{{end}}>S3 keys</a>
+  <a href="/-/admin/acl"{{if eq . "acl"}} class="sel"{{end}}>Server access</a>
+  <a href="/-/admin/namespaces"{{if eq . "namespaces"}} class="sel"{{end}}>Namespaces</a>
+</nav>
+{{end}}

@@ -117,6 +117,22 @@ func TestLastAdminGuard(t *testing.T) {
 	if e, _ := db.ACL(ctx, ServerNamespace); len(e) != 3 {
 		t.Errorf("entries after a refused change: %+v", e)
 	}
+	// Guarded group changes and disabling.
+	must(db.SetUserGroups(ctx, "user:alice", nil))
+	must(db.SetACLGuarded(ctx, admin("group:ops")))
+	must(db.SetUserGroupsGuarded(ctx, "user:alice", []string{"group:ops"}))
+	must(db.RemoveACLGuarded(ctx, ServerNamespace, "group:admins", ""))
+	if err := db.SetUserGroupsGuarded(ctx, "user:alice", nil); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("leave the last administrators' group: %v", err)
+	}
+	if err := db.SetDisabledGuarded(ctx, "user:alice", true); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("disable the last administrator: %v", err)
+	}
+	// Without any administrator, changes that add none still go through.
+	must(db.SetDisabled(ctx, "user:alice", true))
+	must(db.SetACLGuarded(ctx, ACLEntry{Namespace: ServerNamespace, Principal: "user:ghost2", Perms: []string{PermRead}}))
+	must(db.SetDisabledGuarded(ctx, "user:alice", false))
+
 	// Other namespaces are not guarded.
 	must(db.SetACLGuarded(ctx, ACLEntry{Namespace: "ns", Principal: "user:alice", Perms: []string{PermAdmin}}))
 	must(db.RemoveACLGuarded(ctx, "ns", "user:alice", ""))

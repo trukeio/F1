@@ -783,6 +783,7 @@ Paths below are relative to `/api/v1`.
 | `GET /me` | who you are, with your groups | |
 | `POST`, `GET /me/s3keys`, `DELETE /me/s3keys/{key}` | your S3 keys | |
 | `POST`, `GET /me/tokens`, `DELETE /me/tokens/{id}` | your tokens: `{"description", "expires"}` creates one (§4.3) | |
+| `/admin/…` | users, groups, every token and S3 key (§4.3, "Administration in a browser") | server administrator |
 
 The object endpoints are what the native client uses to push: upload the content the server lacks, then commit it. They take hashes rather than paths, so they need read permission on the whole namespace (D13). The pack stream and object encodings are specified in [`doc/format.md`](format.md). The server computes content digests itself and refuses uploaded DigestRecords.
 
@@ -1109,6 +1110,34 @@ $ curl -H "Authorization: Bearer $F1_TOKEN" http://f1.example.com:8080/api/v1/ns
 
 `f1d repo export-acl <ns> [file]` writes a namespace's ACL as TOML, and `f1d repo import-acl <ns> <file>` applies it on another server, skipping principals it does not know.
 
+### Administration in a browser {#web-admin}
+
+`f1web`, the web interface (`doc/admin.md`, "Web viewer"), does most of the above without `f1d` or `curl`. It calls the API as the signed-in user, so F1 checks every change exactly as it would through the API (ADR-0020).
+
+| Who | Page | Does |
+|---|---|---|
+| everyone | your name in the header, `/-/settings` | your principal and groups; create and revoke your own tokens and S3 keys |
+| namespace administrators | the namespace's Settings tab, `/<ns>/settings/access` | its ACL: add, change and remove entries, and check what a user and their groups may do on a path |
+| server administrators | Administration in the header, `/-/admin` | users (add, groups, disable, their tokens and S3 keys), every token and S3 key, the server's ACL, and new namespaces |
+
+- **Recent sign-in.** Access and administration pages need a sign-in no older than `admin_max_age` in `f1web.toml` (one hour by default). After that, `f1web` asks you to sign in again; with single sign-on the identity provider asks for your password (and second factor) again.
+- **Secrets are shown once**, on the page that creates them. Copy them then; reloading the page does not show them again.
+- **Destructive actions ask first**: revoking, disabling and removing an entry go through a confirmation page.
+- **What stays on the host**: repository operations (`f1d repo …`, `gc`, `fsck`, `backup`), S3 keys for other users (`f1d s3key create`), and recovery when no administrator is left (`f1d acl set '*' user:<you> "" admin`).
+
+The same administration is in the API, for scripts:
+
+| Endpoint | Does |
+|---|---|
+| `GET /admin/principals` | local users and the OIDC users F1 has seen, with their groups |
+| `POST /admin/users` | add a local user: `{"name", "groups"}` |
+| `PUT /admin/users/{name}/groups` | replace a local user's groups: `{"groups"}` |
+| `PUT /admin/principals/{principal}/disabled` | `{"disabled": true}` blocks every credential of a user, local or OIDC; `false` unblocks |
+| `GET /admin/tokens[?principal=]`, `POST /admin/tokens`, `DELETE /admin/tokens/{id}` | every token; create one for a user (`{"principal", "description", "expires"}`; no `expires` never expires); revoke any |
+| `GET /admin/s3keys[?principal=]`, `DELETE /admin/s3keys/{key}` | every S3 key; revoke any |
+
+They need a server administrator. A change that would leave the server without an enabled administrator (disabling the last one, or taking them out of the group that makes them one) is refused with `409 last_admin`, and you cannot disable yourself. Every change is logged as `security: admin change`.
+
 ## 4.4 `f1d` {#f1d}
 
 ```
@@ -1281,6 +1310,6 @@ Logs are structured (`log/slog`); `log.format = "json"` suits log collectors.
 - **Storage of code histories**: small files are stored whole per version, so a code repository with a long history takes 3 to 6 times the space of a Git pack. Delta-encoded storage is proposed (ADR-0013).
 - **Git**: thin fetch packs against the client's objects; SHA-256 repositories.
 - **S3**: bucket policies and ACLs, lifecycle rules, object lock, encryption settings, tagging, website hosting, Select, replication.
-- **Clients**: OIDC login in `f1` (tokens come from the environment), branch merges in the native client, a FUSE file system, a web UI.
+- **Clients**: OIDC login in `f1` (tokens come from the environment), branch merges in the native client, a FUSE file system, editing files in the web interface.
 - **Protocols**: the SVN wire protocol; SVN users move to the native client, Git or S3, and `f1d repo import-svn` brings their history (§2.7).
 - **Hosting on Windows.** The server runs on Unix systems; clients run anywhere.

@@ -522,6 +522,130 @@ func TestACLAPI(t *testing.T) {
 	}
 }
 
+// Server administrators manage users and every credential through the API
+// (ADR-0020, A4).
+func TestAdminAPI(t *testing.T) {
+	p := oidctest.New(t)
+	e := start(t, envOpts{oidc: []auth.OIDCConfig{{Name: "corp", Issuer: p.Issuer(), Audiences: []string{"f1"}}}})
+	carol := f1client.New(e.url, p.Token(t, "rsa1", jose.RS256, p.Claims("carol", "f1", []string{"designers"}, nil)))
+	if _, err := carol.Me(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only server administrators.
+	if _, err := e.alice.AdminPrincipals(ctx); f1client.Code(err) != f1client.CodeForbidden {
+		t.Fatalf("alice lists principals: %v", err)
+	}
+	if _, err := e.alice.AdminCreateUser(ctx, f1client.CreateUserRequest{Name: "mallory"}); f1client.Code(err) != f1client.CodeForbidden {
+		t.Fatalf("alice adds a user: %v", err)
+	}
+
+	// Users and groups.
+	dave, err := e.admin.AdminCreateUser(ctx, f1client.CreateUserRequest{Name: "dave", Groups: []string{"eng", "group:ops"}})
+	if err != nil || dave.Name != "user:dave" || strings.Join(dave.Groups, ",") != "group:eng,group:ops" || dave.Issuer != "local" {
+		t.Fatalf("add dave: %+v, %v", dave, err)
+	}
+	if _, err := e.admin.AdminCreateUser(ctx, f1client.CreateUserRequest{Name: "dave"}); f1client.Code(err) != f1client.CodeExists {
+		t.Errorf("add dave twice: %v", err)
+	}
+	if _, err := e.admin.AdminCreateUser(ctx, f1client.CreateUserRequest{Name: "carol"}); f1client.Code(err) != f1client.CodeExists {
+		t.Errorf("add a local user with an OIDC user's name: %v", err)
+	}
+	if _, err := e.admin.AdminCreateUser(ctx, f1client.CreateUserRequest{Name: "bad name"}); f1client.Code(err) != f1client.CodeBadRequest {
+		t.Errorf("invalid name: %v", err)
+	}
+	if err := e.admin.AdminSetGroups(ctx, "dave", []string{"eng"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.admin.AdminSetGroups(ctx, "carol", []string{"eng"}); f1client.Code(err) != f1client.CodeBadRequest {
+		t.Errorf("set an OIDC user's groups: %v", err)
+	}
+	ps, err := e.admin.AdminPrincipals(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]f1client.Principal{}
+	for _, x := range ps {
+		byName[x.Name] = x
+	}
+	if d := byName["user:dave"]; strings.Join(d.Groups, ",") != "group:eng" {
+		t.Errorf("dave = %+v", d)
+	}
+	if c := byName["user:carol"]; c.Issuer != "corp" || strings.Join(c.Groups, ",") != "group:designers" || c.GroupsSeen == nil {
+		t.Errorf("carol = %+v", c)
+	}
+
+	// Tokens and S3 keys of other users.
+	tok, err := e.admin.AdminCreateToken(ctx, f1client.AdminTokenRequest{Principal: "dave", Description: "ci"})
+	if err != nil || tok.Expires != nil || tok.Principal != "user:dave" {
+		t.Fatalf("token for dave: %+v, %v", tok, err)
+	}
+	daveC := f1client.New(e.url, tok.Secret)
+	if me, err := daveC.Me(ctx); err != nil || me.Principal != "user:dave" {
+		t.Fatalf("dave's token: %+v, %v", me, err)
+	}
+	if _, err := e.admin.AdminCreateToken(ctx, f1client.AdminTokenRequest{Principal: "nobody"}); f1client.Code(err) != f1client.CodeNotFound {
+		t.Errorf("token for an unknown user: %v", err)
+	}
+	if toks, _ := e.admin.AdminTokens(ctx, "dave"); len(toks) != 1 || toks[0].Secret != "" {
+		t.Errorf("dave's tokens: %+v", toks)
+	}
+	if toks, _ := e.admin.AdminTokens(ctx, ""); len(toks) != 4 {
+		t.Errorf("all tokens: %d, want 4", len(toks))
+	}
+	keys, err := e.admin.AdminS3Keys(ctx, "")
+	if err != nil || len(keys) != 3 || keys[0].Principal == "" {
+		t.Fatalf("all S3 keys: %+v, %v", keys, err)
+	}
+	if err := e.admin.AdminDeleteS3Key(ctx, e.s3keys["bob"].AccessKey); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ = e.admin.AdminS3Keys(ctx, "user:bob"); len(keys) != 0 {
+		t.Errorf("bob's keys after revocation: %+v", keys)
+	}
+
+	// Disabling blocks every credential; the last administrator and the
+	// caller cannot be disabled.
+	if err := e.admin.AdminSetDisabled(ctx, "dave", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daveC.Me(ctx); f1client.Code(err) != f1client.CodeUnauthenticated {
+		t.Errorf("disabled dave: %v", err)
+	}
+	if err := e.admin.AdminSetDisabled(ctx, "user:carol", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := carol.Me(ctx); f1client.Code(err) != f1client.CodeUnauthenticated {
+		t.Errorf("disabled OIDC user: %v", err)
+	}
+	if err := e.admin.AdminSetDisabled(ctx, "admin", true); f1client.Code(err) != f1client.CodeBadRequest {
+		t.Errorf("disable yourself: %v", err)
+	}
+	e.setACL(t, "*", "group:ops", "", "admin")
+	if err := e.admin.AdminSetGroups(ctx, "dave", []string{"ops"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.admin.AdminSetDisabled(ctx, "dave", false); err != nil {
+		t.Fatal(err)
+	}
+	// dave, through group:ops, is the other administrator.
+	if err := e.admin.DeleteACL(ctx, "*", "user:admin", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := daveC.AdminSetGroups(ctx, "dave", nil); f1client.Code(err) != f1client.CodeLastAdmin {
+		t.Errorf("leave the last administrators' group: %v", err)
+	}
+	if err := e.admin.AdminDeleteToken(ctx, tok.ID); f1client.Code(err) != f1client.CodeForbidden {
+		t.Errorf("a former administrator revokes a token: %v", err)
+	}
+	if err := daveC.AdminDeleteToken(ctx, tok.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := daveC.AdminDeleteToken(ctx, tok.ID); f1client.Code(err) != f1client.CodeUnauthenticated {
+		t.Errorf("revoked token: %v", err)
+	}
+}
+
 func TestNamespaceAdmin(t *testing.T) {
 	e := start(t, envOpts{})
 	if _, err := e.alice.CreateNamespace(ctx, f1client.CreateNamespaceRequest{Name: "x"}); f1client.Code(err) != f1client.CodeForbidden {

@@ -1,6 +1,9 @@
 {{define "content"}}{{$msg := .Message}}{{with .Data}}{{$p := .}}
-{{template "repohead" .}}
-<h1>Access</h1>
+{{if .Server}}<div class="settings">{{template "adminnav" "acl"}}<section>
+<h1>Server access</h1>
+<p class="muted">Entries here apply to the server as a whole. <code>admin</code> for the whole server makes a server administrator, who can do everything in every namespace and use these pages. F1 refuses a change that would leave no enabled server administrator.</p>
+{{else}}{{template "repohead" .}}
+<h1>Access</h1>{{end}}
 <p class="muted">An entry grants permissions to a user or group on the paths that start with its prefix; an empty prefix is the whole namespace. For a path, the longest matching prefix decides, and the entries of a user and their groups at that prefix combine. An entry without permissions denies. Server administrators can do everything.</p>
 {{if $msg}}<p class="flash">{{$msg}}</p>{{end}}
 {{if .Entries}}
@@ -13,19 +16,19 @@
     <td class="mono">{{.Principal}}{{if not .Known}} <span class="tag warn" title="F1 does not know this principal yet. OIDC users and groups become known when they first use F1; check the spelling otherwise.">unknown</span>{{end}}</td>
     <td>{{range .Perms}}<span class="tag">{{.}}</span> {{else}}<span class="tag warn">denied</span>{{end}}</td>
     <td class="actions">
-      <a class="btn" href="/{{$p.NS.Name}}/settings/access?principal={{.Principal}}&amp;prefix={{.Prefix}}#entry">Edit</a>
-      <a class="btn danger" href="/{{$p.NS.Name}}/settings/access/remove?principal={{.Principal}}&amp;prefix={{.Prefix}}">Remove</a>
+      <a class="btn" href="{{$p.Base}}?principal={{.Principal}}&amp;prefix={{.Prefix}}#entry">Edit</a>
+      <a class="btn danger" href="{{$p.Base}}/remove?principal={{.Principal}}&amp;prefix={{.Prefix}}">Remove</a>
     </td>
   </tr>
   {{end}}
 </table>
 </div>
 {{else}}
-<p class="muted">The namespace has no entries: only server administrators can use it.</p>
+<p class="muted">{{if .Server}}The server has no entries.{{else}}The namespace has no entries: only server administrators can use it.{{end}}</p>
 {{end}}
 
 <div class="columns">
-<form id="entry" method="post" action="/{{.NS.Name}}/settings/access" class="box form">
+<form id="entry" method="post" action="{{.Base}}" class="box form">
   <h2>Add or change an entry</h2>
   <label for="principal">User or group</label>
   <input id="principal" name="principal" type="text" required placeholder="user:alice or group:eng" value="{{.Form.Principal}}" autocomplete="off" spellcheck="false">
@@ -39,7 +42,7 @@
   <button class="btn primary">Save entry</button>
 </form>
 
-<form method="get" action="/{{.NS.Name}}/settings/access#check" id="check" class="box form">
+<form method="get" action="{{.Base}}#check" id="check" class="box form">
   <h2>Check access</h2>
   <label for="check-who">Principals</label>
   <input id="check-who" name="check" type="text" required placeholder="user:alice, group:eng" value="{{with .Check}}{{.Principals}}{{end}}" autocomplete="off" spellcheck="false">
@@ -56,4 +59,5 @@
   {{end}}
 </form>
 </div>
+{{if .Server}}</section></div>{{end}}
 {{end}}{{end}}

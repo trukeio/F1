@@ -13,6 +13,7 @@
   <a class="brand" href="/">F1</a>
   {{if .User}}
   <nav class="user">
+    {{if .ServerAdmin}}<a href="/-/admin">Administration</a>{{end}}
     <a href="/-/settings" title="{{.User}}: settings">{{.UserName}}</a>
     <form method="post" action="/-/logout"><button class="link">Sign out</button></form>
   </nav>

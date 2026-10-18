@@ -1,0 +1,24 @@
+{{define "content"}}{{with .Data}}
+<div class="settings">
+{{template "adminnav" "s3keys"}}
+<section>
+  <h1>S3 keys</h1>
+  <p class="muted">Every S3 access key that is not revoked. Users create their own in their settings.</p>
+  {{if .S3Keys}}
+  <div class="box scroll listing">
+  <table class="grid">
+    <tr><th>User</th><th>Access key</th><th>Created</th><th></th></tr>
+    {{range .S3Keys}}
+    <tr>
+      <td><a class="mono" href="{{userURL .Principal}}">{{.Principal}}</a></td>
+      <td class="mono">{{.AccessKey}}</td>
+      <td>{{.Created.UTC.Format "2006-01-02"}}</td>
+      <td class="actions"><a class="btn danger" href="/-/admin/s3keys/{{.AccessKey}}/revoke">Revoke</a></td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  {{else}}<p class="muted">No S3 keys.</p>{{end}}
+</section>
+</div>
+{{end}}{{end}}

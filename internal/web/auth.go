@@ -73,7 +73,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := ""
 	if reauth {
-		msg = "Sign in again to change access settings: your sign-in is older than " + s.cfg.AdminMaxAge + "."
+		msg = "Sign in again to change administration settings: your sign-in is older than " + s.cfg.AdminMaxAge + "."
 	}
 	s.renderLogin(w, r, http.StatusOK, next, msg)
 }

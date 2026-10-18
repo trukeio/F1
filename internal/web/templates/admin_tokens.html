@@ -1,0 +1,26 @@
+{{define "content"}}{{with .Data}}{{$p := .}}
+<div class="settings">
+{{template "adminnav" "tokens"}}
+<section>
+  <h1>Tokens</h1>
+  <p class="muted">Every token that is not revoked. Create tokens for a user on their page.</p>
+  {{if .Tokens}}
+  <div class="box scroll listing">
+  <table class="grid">
+    <tr><th>User</th><th>Token</th><th>Description</th><th>Created</th><th>Expires</th><th></th></tr>
+    {{range .Tokens}}
+    <tr>
+      <td><a class="mono" href="{{userURL .Principal}}">{{.Principal}}</a></td>
+      <td class="mono">{{.ID}}</td>
+      <td>{{.Description}}</td>
+      <td>{{.Created.UTC.Format "2006-01-02"}}</td>
+      <td>{{with .Expires}}{{.UTC.Format "2006-01-02"}}{{else}}<span class="muted">never</span>{{end}}{{if $p.Expired .}} <span class="tag warn">expired</span>{{end}}</td>
+      <td class="actions"><a class="btn danger" href="/-/admin/tokens/{{.ID}}/revoke">Revoke</a></td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  {{else}}<p class="muted">No tokens.</p>{{end}}
+</section>
+</div>
+{{end}}{{end}}

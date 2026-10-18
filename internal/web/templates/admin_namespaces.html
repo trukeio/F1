@@ -1,0 +1,34 @@
+{{define "content"}}{{$msg := .Message}}{{with .Data}}{{$p := .}}
+<div class="settings">
+{{template "adminnav" "namespaces"}}
+<section>
+  <h1>Namespaces</h1>
+  {{if $msg}}<p class="flash">{{$msg}}</p>{{end}}
+  {{if .Namespaces}}
+  <ul class="list">
+    {{range .Namespaces}}
+    <li>
+      <a class="name" href="/{{.Name}}">{{.Name}}</a>
+      <span class="tag">{{.Config.Layout}}</span>
+      {{if .Config.Git}}<span class="tag">git</span>{{end}}
+      {{if .Frozen}}<span class="tag warn">frozen</span>{{end}}
+      <span class="grow"></span>
+      <a class="btn" href="/{{.Name}}/settings/access">Access</a>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}<p class="muted">No namespaces yet.</p>{{end}}
+  <h2>Create a namespace</h2>
+  <form method="post" action="/-/admin/namespaces" class="box form">
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" required placeholder="design" value="{{index .Form "name"}}" autocomplete="off" spellcheck="false">
+    <label for="preset">Preset</label>
+    <select id="preset" name="preset">
+      {{range .Presets}}<option value="{{.}}"{{if eq . (index $p.Form "preset")}} selected{{end}}>{{if .}}{{.}}{{else}}default (files with history and locks){{end}}</option>{{end}}
+    </select>
+    <p class="muted">Presets: <code>git</code> for Git repositories, <code>svn</code> for Subversion-style locking, <code>s3</code> for S3 buckets. Other configurations need the API (§3.3 of the manual). A new namespace has no ACL entries: grant access on its Access page.</p>
+    <button class="btn primary">Create namespace</button>
+  </form>
+</section>
+</div>
+{{end}}{{end}}

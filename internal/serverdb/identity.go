@@ -27,6 +27,8 @@ var (
 	ErrNoPrincipal    = errors.New("serverdb: no such principal")
 	ErrNoToken        = errors.New("serverdb: no such token")
 	ErrNoACLEntry     = errors.New("serverdb: no such ACL entry")
+	ErrUserExists     = errors.New("serverdb: user already exists")
+	ErrInvalid        = errors.New("serverdb: invalid")
 )
 
 // Principal is a user known to the server.
@@ -35,6 +37,11 @@ type Principal struct {
 	Issuer   string
 	Disabled bool
 	Created  time.Time
+	// Groups and GroupsSeen are filled in by Principals only: a local
+	// user's groups, or an external principal's groups at its last token
+	// use, and when that was.
+	Groups     []string
+	GroupsSeen time.Time
 }
 
 // ValidPrincipal checks a principal or group name: "user:<name>" or
@@ -56,11 +63,11 @@ func ValidPrincipal(p string) error {
 // AddUser creates a local user with the given groups.
 func (d *DB) AddUser(ctx context.Context, name string, groups []string) error {
 	if err := ValidPrincipal(name); err != nil || !strings.HasPrefix(name, "user:") {
-		return fmt.Errorf("serverdb: %q is not a user principal (user:<name>)", name)
+		return fmt.Errorf("%w: %q is not a user principal (user:<name>)", ErrInvalid, name)
 	}
 	for _, g := range groups {
 		if err := ValidPrincipal(g); err != nil || !strings.HasPrefix(g, "group:") {
-			return fmt.Errorf("serverdb: %q is not a group (group:<name>)", g)
+			return fmt.Errorf("%w: %q is not a group (group:<name>)", ErrInvalid, g)
 		}
 	}
 	return d.tx(ctx, func(tx *sql.Tx) error {
@@ -70,7 +77,7 @@ func (d *DB) AddUser(ctx context.Context, name string, groups []string) error {
 		case err == nil && issuer != LocalIssuer:
 			return fmt.Errorf("%w: %s is authenticated by %s", ErrPrincipalTaken, name, issuer)
 		case err == nil:
-			return fmt.Errorf("serverdb: user %s already exists", name)
+			return fmt.Errorf("%w: %s", ErrUserExists, name)
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
@@ -88,36 +95,54 @@ func (d *DB) AddUser(ctx context.Context, name string, groups []string) error {
 
 // SetUserGroups replaces a local user's groups.
 func (d *DB) SetUserGroups(ctx context.Context, name string, groups []string) error {
-	return d.tx(ctx, func(tx *sql.Tx) error {
-		var issuer string
-		if err := tx.QueryRowContext(ctx, `SELECT issuer FROM principals WHERE name = ?`, name).Scan(&issuer); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("%w: %s", ErrNoPrincipal, name)
-			}
+	return d.tx(ctx, func(tx *sql.Tx) error { return setUserGroups(ctx, tx, name, groups) })
+}
+
+// SetUserGroupsGuarded is SetUserGroups, refusing with ErrLastAdmin a
+// change that leaves the server without an enabled administrator.
+func (d *DB) SetUserGroupsGuarded(ctx context.Context, name string, groups []string) error {
+	return d.guarded(ctx, ServerNamespace, func(tx *sql.Tx) error { return setUserGroups(ctx, tx, name, groups) })
+}
+
+func setUserGroups(ctx context.Context, tx *sql.Tx, name string, groups []string) error {
+	var issuer string
+	if err := tx.QueryRowContext(ctx, `SELECT issuer FROM principals WHERE name = ?`, name).Scan(&issuer); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrNoPrincipal, name)
+		}
+		return err
+	}
+	if issuer != LocalIssuer {
+		return fmt.Errorf("%w: the groups of %s come from its tokens", ErrInvalid, name)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE principal = ?`, name); err != nil {
+		return err
+	}
+	for _, g := range groups {
+		if err := ValidPrincipal(g); err != nil || !strings.HasPrefix(g, "group:") {
+			return fmt.Errorf("%w: %q is not a group (group:<name>)", ErrInvalid, g)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO memberships(principal, group_name) VALUES (?, ?)`, name, g); err != nil {
 			return err
 		}
-		if issuer != LocalIssuer {
-			return fmt.Errorf("serverdb: the groups of %s come from its tokens", name)
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM memberships WHERE principal = ?`, name); err != nil {
-			return err
-		}
-		for _, g := range groups {
-			if err := ValidPrincipal(g); err != nil || !strings.HasPrefix(g, "group:") {
-				return fmt.Errorf("serverdb: %q is not a group (group:<name>)", g)
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO memberships(principal, group_name) VALUES (?, ?)`, name, g); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // SetDisabled disables or enables a principal. A disabled principal's
 // tokens, S3 keys and OIDC tokens are refused.
 func (d *DB) SetDisabled(ctx context.Context, name string, disabled bool) error {
-	res, err := d.db.ExecContext(ctx, `UPDATE principals SET disabled = ? WHERE name = ?`, boolInt(disabled), name)
+	return setDisabled(ctx, d.db, name, disabled)
+}
+
+// SetDisabledGuarded is SetDisabled, refusing with ErrLastAdmin to disable
+// the last enabled server administrator.
+func (d *DB) SetDisabledGuarded(ctx context.Context, name string, disabled bool) error {
+	return d.guarded(ctx, ServerNamespace, func(tx *sql.Tx) error { return setDisabled(ctx, tx, name, disabled) })
+}
+
+func setDisabled(ctx context.Context, db execer, name string, disabled bool) error {
+	res, err := db.ExecContext(ctx, `UPDATE principals SET disabled = ? WHERE name = ?`, boolInt(disabled), name)
 	if err != nil {
 		return err
 	}
@@ -127,9 +152,12 @@ func (d *DB) SetDisabled(ctx context.Context, name string, disabled bool) error 
 	return nil
 }
 
-// Principals lists all principals.
+// Principals lists all principals with their groups.
 func (d *DB) Principals(ctx context.Context) ([]Principal, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT name, issuer, disabled, created_at FROM principals ORDER BY name`)
+	rows, err := d.db.QueryContext(ctx, `SELECT p.name, p.issuer, p.disabled, p.created_at, p.groups, p.groups_seen_at,
+		COALESCE((SELECT group_concat(group_name, ',') FROM
+			(SELECT group_name FROM memberships m WHERE m.principal = p.name ORDER BY group_name)), '')
+		FROM principals p ORDER BY p.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -138,11 +166,24 @@ func (d *DB) Principals(ctx context.Context) ([]Principal, error) {
 	for rows.Next() {
 		var p Principal
 		var dis int
-		var created int64
-		if err := rows.Scan(&p.Name, &p.Issuer, &dis, &created); err != nil {
+		var created, seen int64
+		var external, local string
+		if err := rows.Scan(&p.Name, &p.Issuer, &dis, &created, &external, &seen, &local); err != nil {
 			return nil, err
 		}
 		p.Disabled, p.Created = dis != 0, time.Unix(created, 0)
+		if p.Issuer == LocalIssuer {
+			if local != "" {
+				p.Groups = strings.Split(local, ",")
+			}
+		} else {
+			if err := json.Unmarshal([]byte(external), &p.Groups); err != nil {
+				return nil, err
+			}
+			if seen != 0 {
+				p.GroupsSeen = time.Unix(seen, 0)
+			}
+		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -333,18 +374,20 @@ func (d *DB) CreateS3Key(ctx context.Context, principal string) (S3Key, error) {
 	return k, err
 }
 
-// S3Keys lists the active S3 keys of a principal, without secrets.
+// S3Keys lists the active S3 keys of a principal ("" for all), without
+// secrets.
 func (d *DB) S3Keys(ctx context.Context, principal string) ([]S3Key, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT access_key, created_at FROM s3keys WHERE principal = ? AND revoked_at = 0 ORDER BY created_at`, principal)
+	rows, err := d.db.QueryContext(ctx, `SELECT access_key, principal, created_at FROM s3keys
+		WHERE (? = '' OR principal = ?) AND revoked_at = 0 ORDER BY created_at, access_key`, principal, principal)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []S3Key
 	for rows.Next() {
-		k := S3Key{Principal: principal}
+		var k S3Key
 		var created int64
-		if err := rows.Scan(&k.AccessKey, &created); err != nil {
+		if err := rows.Scan(&k.AccessKey, &k.Principal, &created); err != nil {
 			return nil, err
 		}
 		k.Created = time.Unix(created, 0)
@@ -366,10 +409,10 @@ func (d *DB) LookupS3Key(ctx context.Context, accessKey string) (S3Key, error) {
 	return k, err
 }
 
-// RevokeS3Key revokes a principal's S3 key.
+// RevokeS3Key revokes a principal's S3 key; principal "" revokes any.
 func (d *DB) RevokeS3Key(ctx context.Context, principal, accessKey string) error {
-	res, err := d.db.ExecContext(ctx, `UPDATE s3keys SET revoked_at = ? WHERE access_key = ? AND principal = ? AND revoked_at = 0`,
-		time.Now().Unix(), accessKey, principal)
+	res, err := d.db.ExecContext(ctx, `UPDATE s3keys SET revoked_at = ? WHERE access_key = ? AND (? = '' OR principal = ?) AND revoked_at = 0`,
+		time.Now().Unix(), accessKey, principal, principal)
 	if err != nil {
 		return err
 	}
@@ -420,35 +463,37 @@ var ErrLastAdmin = errors.New("serverdb: the server would have no enabled admini
 // SetACLGuarded is SetACL, refusing with ErrLastAdmin a change that leaves
 // the server without an enabled administrator (ADR-0020, item 7).
 func (d *DB) SetACLGuarded(ctx context.Context, e ACLEntry) error {
-	return d.tx(ctx, func(tx *sql.Tx) error {
-		if err := setACL(ctx, tx, e); err != nil {
-			return err
-		}
-		return guardAdmins(ctx, tx, e.Namespace)
-	})
+	return d.guarded(ctx, e.Namespace, func(tx *sql.Tx) error { return setACL(ctx, tx, e) })
 }
 
 // RemoveACLGuarded is RemoveACL with the guard of SetACLGuarded.
 func (d *DB) RemoveACLGuarded(ctx context.Context, ns, principal, prefix string) error {
-	return d.tx(ctx, func(tx *sql.Tx) error {
-		if err := removeACL(ctx, tx, ns, principal, prefix); err != nil {
-			return err
-		}
-		return guardAdmins(ctx, tx, ns)
-	})
+	return d.guarded(ctx, ns, func(tx *sql.Tx) error { return removeACL(ctx, tx, ns, principal, prefix) })
 }
 
-// guardAdmins returns ErrLastAdmin if a change to namespace ns left the
-// server without an enabled administrator.
-func guardAdmins(ctx context.Context, tx *sql.Tx, ns string) error {
-	if ns != ServerNamespace {
-		return nil
-	}
-	n, err := adminCount(ctx, tx)
-	if err == nil && n == 0 {
-		err = ErrLastAdmin
-	}
-	return err
+// guarded runs change in a transaction and returns ErrLastAdmin if it took
+// the server from some enabled administrators to none. Changes to
+// namespaces other than "*" cannot. A server that has none already (for
+// example, administrators in an OIDC group whose members have not used F1
+// yet) does not block changes that do not add one.
+func (d *DB) guarded(ctx context.Context, ns string, change func(*sql.Tx) error) error {
+	return d.tx(ctx, func(tx *sql.Tx) error {
+		if ns != ServerNamespace {
+			return change(tx)
+		}
+		before, err := adminCount(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := change(tx); err != nil {
+			return err
+		}
+		after, err := adminCount(ctx, tx)
+		if err == nil && before > 0 && after == 0 {
+			err = ErrLastAdmin
+		}
+		return err
+	})
 }
 
 // adminCount counts the entries that make enabled principals server

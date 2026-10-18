@@ -1,0 +1,31 @@
+{{define "content"}}{{$msg := .Message}}{{with .Data}}{{$p := .}}
+<div class="settings">
+{{template "adminnav" "users"}}
+<section>
+  <h1>Users</h1>
+  <p class="muted">Local users sign in with tokens. OIDC users are listed once they have used F1, with the groups of their last sign-in; their groups and passwords are managed at the identity provider.</p>
+  {{if $msg}}<p class="flash">{{$msg}}</p>{{end}}
+  <div class="box scroll listing">
+  <table class="grid">
+    <tr><th>User</th><th>Signs in with</th><th>Groups</th><th>Created</th></tr>
+    {{range .Principals}}
+    <tr>
+      <td><a class="mono" href="{{userURL .Name}}">{{.Name}}</a>{{if index $p.Admins .Name}} <span class="tag">server admin</span>{{end}}{{if .Disabled}} <span class="tag warn">disabled</span>{{end}}</td>
+      <td>{{if eq .Issuer "local"}}tokens{{else}}{{.Issuer}}{{end}}</td>
+      <td>{{range .Groups}}<span class="tag">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</td>
+      <td>{{.Created.UTC.Format "2006-01-02"}}</td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  <h2>Add a local user</h2>
+  <form method="post" action="/-/admin/users" class="box form">
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" required placeholder="alice" value="{{index .Form "name"}}" autocomplete="off" spellcheck="false">
+    <label for="groups">Groups</label>
+    <input id="groups" name="groups" type="text" placeholder="eng, ops" value="{{index .Form "groups"}}" autocomplete="off" spellcheck="false">
+    <button class="btn primary">Add user</button>
+  </form>
+</section>
+</div>
+{{end}}{{end}}

@@ -64,6 +64,7 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	s.routes(mux)
 	s.settingsRoutes(mux)
 	s.accessRoutes(mux)
+	s.adminRoutes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusNotFound, "error", pageData{Title: "Not found", Message: "This page does not exist."})
 	})
@@ -141,7 +142,9 @@ func (s *Server) page(fn func(w http.ResponseWriter, r *http.Request, rq *reques
 		}
 		api, err := s.client(r.Context(), sess)
 		if err == nil {
-			err = fn(w, r, &request{sess: sess, api: api})
+			rq := &request{sess: sess, api: api}
+			s.nsAdmin(r.Context(), rq, serverNS) // for the Administration link; cached
+			err = fn(w, r, rq)
 		}
 		if err != nil {
 			s.fail(w, r, sess, err)
@@ -213,10 +216,12 @@ func (s *Server) refresh(ctx context.Context, sess *session) (string, error) {
 
 // pageData is what every template gets.
 type pageData struct {
-	User    string // principal; "" when not signed in
-	Title   string
-	Message string
-	Data    any // page-specific
+	User string // principal; "" when not signed in
+	// ServerAdmin shows the Administration link; set by render.
+	ServerAdmin bool
+	Title       string
+	Message     string
+	Data        any // page-specific
 	// Keyboard shortcuts of namespace pages: the file finder ("t") and
 	// this page at its commit ("y").
 	Finder, Permalink string
@@ -249,6 +254,11 @@ func parsePages() (map[string]*template.Template, error) {
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, d pageData) {
 	t := s.pages[name]
+	if sess := s.session(r); sess != nil && d.User != "" {
+		sess.cacheMu.Lock()
+		d.ServerAdmin = sess.admin[serverNS].ok
+		sess.cacheMu.Unlock()
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)

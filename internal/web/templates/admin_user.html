@@ -1,0 +1,83 @@
+{{define "content"}}{{$msg := .Message}}{{with .Data}}{{$p := .}}{{with .Principal}}{{$u := .}}
+<div class="settings">
+{{template "adminnav" "users"}}
+<section>
+  <h1>{{.Name}}{{if index $p.Admins .Name}} <span class="tag">server admin</span>{{end}}{{if .Disabled}} <span class="tag warn">disabled</span>{{end}}</h1>
+  {{with $p.Secret}}{{template "secret" (secretBox "New token" "token" "Token" .Value)}}{{end}}
+  {{if $msg}}<p class="flash">{{$msg}}</p>{{end}}
+  <table class="props">
+    <tr><th>Signs in with</th><td>{{if eq .Issuer "local"}}F1 tokens (local user){{else}}{{.Issuer}} (OIDC){{end}}</td></tr>
+    <tr><th>Created</th><td>{{.Created.UTC.Format "2006-01-02 15:04 UTC"}}</td></tr>
+    {{if not $p.Local}}<tr><th>Groups seen</th><td>{{with .GroupsSeen}}{{.UTC.Format "2006-01-02 15:04 UTC"}}{{else}}<span class="muted">never</span>{{end}}</td></tr>{{end}}
+  </table>
+
+  <h2>Groups</h2>
+  {{if $p.Local}}
+  <form method="post" action="{{userURL .Name}}/groups" class="box form">
+    <label for="groups">Groups</label>
+    <input id="groups" name="groups" type="text" placeholder="eng, ops" value="{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g}}{{end}}" autocomplete="off" spellcheck="false">
+    <button class="btn primary">Save groups</button>
+  </form>
+  {{else}}
+  <p>{{range .Groups}}<span class="tag">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</p>
+  <p class="muted">The groups of an OIDC user come from the identity provider, as of their last sign-in.</p>
+  {{end}}
+
+  <h2>Tokens</h2>
+  {{if $p.Tokens}}
+  <div class="box scroll listing">
+  <table class="grid">
+    <tr><th>Token</th><th>Description</th><th>Created</th><th>Expires</th><th></th></tr>
+    {{range $p.Tokens}}
+    <tr>
+      <td class="mono">{{.ID}}</td>
+      <td>{{.Description}}</td>
+      <td>{{.Created.UTC.Format "2006-01-02"}}</td>
+      <td>{{with .Expires}}{{.UTC.Format "2006-01-02"}}{{else}}<span class="muted">never</span>{{end}}{{if $p.Expired .}} <span class="tag warn">expired</span>{{end}}</td>
+      <td class="actions"><a class="btn danger" href="/-/admin/tokens/{{.ID}}/revoke?back={{userURL $u.Name}}">Revoke</a></td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  {{else}}<p class="muted">No tokens.</p>{{end}}
+  <form method="post" action="{{userURL .Name}}/tokens" class="box form">
+    <label for="description">New token for {{.Name}}</label>
+    <input id="description" name="description" type="text" maxlength="200" placeholder="What it is for" autocomplete="off">
+    <label for="days">Expires in</label>
+    <select id="days" name="days">
+      {{range $p.Days}}<option value="{{.}}"{{if eq . 90}} selected{{end}}>{{if .}}{{.}} days{{else}}never{{end}}</option>{{end}}
+    </select>
+    <button class="btn primary">Create token</button>
+  </form>
+
+  <h2>S3 keys</h2>
+  {{if $p.S3Keys}}
+  <div class="box scroll listing">
+  <table class="grid">
+    <tr><th>Access key</th><th>Created</th><th></th></tr>
+    {{range $p.S3Keys}}
+    <tr>
+      <td class="mono">{{.AccessKey}}</td>
+      <td>{{.Created.UTC.Format "2006-01-02"}}</td>
+      <td class="actions"><a class="btn danger" href="/-/admin/s3keys/{{.AccessKey}}/revoke?back={{userURL $u.Name}}">Revoke</a></td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  {{else}}<p class="muted">No S3 keys. Users create their own in their settings.</p>{{end}}
+
+  <h2>Status</h2>
+  {{if .Disabled}}
+  <form method="post" action="{{userURL .Name}}/enable" class="box form">
+    <p>F1 refuses every credential of this user.</p>
+    <button class="btn primary">Enable user</button>
+  </form>
+  {{else}}
+  <div class="box form">
+    <p>Disabling blocks every token, S3 key and OIDC sign-in of this user, without deleting anything.</p>
+    <a class="btn danger" href="{{userURL .Name}}/disable">Disable user</a>
+  </div>
+  {{end}}
+</section>
+</div>
+{{end}}{{end}}{{end}}

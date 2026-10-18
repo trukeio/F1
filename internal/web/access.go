@@ -15,6 +15,25 @@ import (
 // namespace (ADR-0020, item 8).
 const adminCacheTTL = time.Minute
 
+// serverNS is the namespace of the server's ACL, at /-/admin/acl.
+const serverNS = "*"
+
+// aclNamespace is the namespace whose ACL a request is about.
+func aclNamespace(r *http.Request) string {
+	if ns := r.PathValue("ns"); ns != "" {
+		return ns
+	}
+	return serverNS
+}
+
+// accessURL is the access page of namespace ns.
+func accessURL(ns string) string {
+	if ns == serverNS {
+		return "/-/admin/acl"
+	}
+	return "/" + url.PathEscape(ns) + "/settings/access"
+}
+
 // perms are the permissions of an ACL entry, in display order.
 var perms = []string{"read", "write", "lock", "admin"}
 
@@ -27,6 +46,10 @@ func (s *Server) accessRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /{ns}/settings/access", s.recent(s.setAccess))
 	mux.HandleFunc("GET /{ns}/settings/access/remove", s.recent(s.confirmRemoveAccess))
 	mux.HandleFunc("POST /{ns}/settings/access/remove", s.recent(s.removeAccess))
+	mux.HandleFunc("GET /-/admin/acl", s.recent(s.access))
+	mux.HandleFunc("POST /-/admin/acl", s.recent(s.setAccess))
+	mux.HandleFunc("GET /-/admin/acl/remove", s.recent(s.confirmRemoveAccess))
+	mux.HandleFunc("POST /-/admin/acl/remove", s.recent(s.removeAccess))
 }
 
 // recent wraps a page that changes access: it needs a sign-in no older
@@ -37,9 +60,12 @@ func (s *Server) recent(fn func(w http.ResponseWriter, r *http.Request, rq *requ
 		if time.Since(rq.sess.signedIn) > maxAge {
 			next := r.URL.RequestURI()
 			if r.Method != http.MethodGet {
-				next = r.URL.Path // the form is lost; come back to its page
+				// The form is lost; come back to its page.
+				next = r.URL.Path
 				if i := strings.Index(next, "/settings/access"); i >= 0 {
 					next = next[:i] + "/settings/access"
+				} else if strings.HasPrefix(next, "/-/admin/") {
+					next = "/-/admin"
 				}
 			}
 			http.Redirect(w, r, "/-/login?reauth=1&next="+urlQueryEscape(next), http.StatusSeeOther)
@@ -87,9 +113,11 @@ func (s *Server) forgetAdmin(sess *session, ns string) {
 // accessPage is a namespace's ACL with a form to change it and a check of
 // what applies to a path.
 type accessPage struct {
-	*repoView
-	Entries []f1client.ACLEntry
-	Perms   []string
+	*repoView        // nil for the server's ACL
+	Server    bool   // the ACL of "*"
+	Base      string // this page's URL
+	Entries   []f1client.ACLEntry
+	Perms     []string
 	// Form is the entry in the form: empty, picked with Edit, or sent and
 	// refused.
 	Form f1client.ACLEntry
@@ -124,10 +152,13 @@ func (s *Server) access(w http.ResponseWriter, r *http.Request, rq *request) err
 // showAccess renders the access page with a message and the form's entry.
 func (s *Server) showAccess(w http.ResponseWriter, r *http.Request, rq *request, status int, msg string, form f1client.ACLEntry) error {
 	ctx := r.Context()
-	ns := r.PathValue("ns")
-	v, err := s.loadRepo(ctx, rq, ns, "", "", "settings")
-	if err != nil {
-		return err
+	ns := aclNamespace(r)
+	var v *repoView
+	if ns != serverNS {
+		var err error
+		if v, err = s.loadRepo(ctx, rq, ns, "", "", "settings"); err != nil {
+			return err
+		}
 	}
 	entries, err := rq.api.ACL(ctx, ns)
 	if err != nil {
@@ -136,7 +167,7 @@ func (s *Server) showAccess(w http.ResponseWriter, r *http.Request, rq *request,
 	for _, e := range entries {
 		sort.Slice(e.Perms, func(i, j int) bool { return permIndex(e.Perms[i]) < permIndex(e.Perms[j]) })
 	}
-	p := &accessPage{repoView: v, Entries: entries, Perms: perms, Form: form}
+	p := &accessPage{repoView: v, Server: ns == serverNS, Base: accessURL(ns), Entries: entries, Perms: perms, Form: form}
 	if form.Perms == nil {
 		// An entry picked with Edit: its current permissions.
 		for _, e := range entries {
@@ -149,7 +180,11 @@ func (s *Server) showAccess(w http.ResponseWriter, r *http.Request, rq *request,
 	if who := strings.TrimSpace(q.Get("check")); who != "" {
 		p.Check = checkAccess(entries, who, q.Get("path"))
 	}
-	d := pageData{User: rq.sess.principal, Title: "Access · " + ns, Message: msg, Data: p}
+	title := "Access · " + ns
+	if p.Server {
+		title = "Server access"
+	}
+	d := pageData{User: rq.sess.principal, Title: title, Message: msg, Data: p}
 	s.render(w, r, status, "access", d)
 	return nil
 }
@@ -193,7 +228,7 @@ func (s *Server) setAccess(w http.ResponseWriter, r *http.Request, rq *request) 
 	if err := parseForm(w, r); err != nil {
 		return s.showAccess(w, r, rq, http.StatusBadRequest, "The form is too large.", f1client.ACLEntry{})
 	}
-	ns := r.PathValue("ns")
+	ns := aclNamespace(r)
 	e := f1client.ACLEntry{Principal: strings.TrimSpace(r.PostFormValue("principal")), Prefix: r.PostFormValue("prefix"),
 		Perms: r.PostForm["perm"]}
 	sort.Slice(e.Perms, func(i, j int) bool { return permIndex(e.Perms[i]) < permIndex(e.Perms[j]) })
@@ -222,10 +257,13 @@ func permIndex(p string) int {
 }
 
 func (s *Server) confirmRemoveAccess(w http.ResponseWriter, r *http.Request, rq *request) error {
-	ns := r.PathValue("ns")
-	v, err := s.loadRepo(r.Context(), rq, ns, "", "", "settings")
-	if err != nil {
-		return err
+	ns := aclNamespace(r)
+	var v *repoView
+	if ns != serverNS {
+		var err error
+		if v, err = s.loadRepo(r.Context(), rq, ns, "", "", "settings"); err != nil {
+			return err
+		}
 	}
 	q := r.URL.Query()
 	principal, prefix := q.Get("principal"), q.Get("prefix")
@@ -233,8 +271,11 @@ func (s *Server) confirmRemoveAccess(w http.ResponseWriter, r *http.Request, rq 
 	if prefix != "" {
 		where = "paths starting with " + prefix
 	}
-	back := "/" + url.PathEscape(ns) + "/settings/access"
-	return s.show(w, r, rq, "confirm", "Remove access", &confirmPage{Repo: v,
+	if ns == serverNS {
+		where = "the server"
+	}
+	back := accessURL(ns)
+	return s.show(w, r, rq, "confirm", "Remove access", &confirmPage{Repo: v, Admin: ns == serverNS, Tab: "acl",
 		Question: "Remove the entry of " + principal + " for " + where + "?",
 		Detail:   "Entries for shorter prefixes then apply to these paths, if there are any; otherwise access is denied.",
 		Action:   back + "/remove", Button: "Remove", Back: back,
@@ -245,7 +286,7 @@ func (s *Server) removeAccess(w http.ResponseWriter, r *http.Request, rq *reques
 	if err := parseForm(w, r); err != nil {
 		return err
 	}
-	ns := r.PathValue("ns")
+	ns := aclNamespace(r)
 	err := rq.api.DeleteACL(r.Context(), ns, r.PostFormValue("principal"), r.PostFormValue("prefix"))
 	if msg, ok := refused(err); ok {
 		return s.showAccess(w, r, rq, http.StatusConflict, msg, f1client.ACLEntry{})
@@ -256,13 +297,16 @@ func (s *Server) removeAccess(w http.ResponseWriter, r *http.Request, rq *reques
 	return s.afterAccessChange(w, r, rq, ns)
 }
 
-// afterAccessChange returns to the access page, or to the namespace if the
-// user no longer administers it.
+// afterAccessChange returns to the access page, or to the namespace (the
+// home page for the server's ACL) if the user no longer administers it.
 func (s *Server) afterAccessChange(w http.ResponseWriter, r *http.Request, rq *request, ns string) error {
 	s.forgetAdmin(rq.sess, ns)
-	to := "/" + url.PathEscape(ns)
+	to := "/"
+	if ns != serverNS {
+		to += url.PathEscape(ns)
+	}
 	if s.nsAdmin(r.Context(), rq, ns) {
-		to += "/settings/access"
+		to = accessURL(ns)
 	}
 	http.Redirect(w, r, to, http.StatusSeeOther)
 	return nil

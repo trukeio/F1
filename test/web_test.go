@@ -615,3 +615,120 @@ func TestWebAccessRecentSignIn(t *testing.T) {
 		t.Errorf("a change went through with a stale sign-in: %+v", acl)
 	}
 }
+
+// Server administrators manage users, credentials, the server's ACL and
+// namespaces in f1web (ADR-0020, A4).
+func TestWebAdmin(t *testing.T) {
+	e := start(t, envOpts{})
+	w := startWeb(t, e, nil)
+	admin, alice := browser(t), browser(t)
+	signIn(t, admin, w, e.tokens["admin"])
+	signIn(t, alice, w, e.tokens["alice"])
+
+	// Only server administrators get the link and the pages.
+	if _, _, body := fetch(t, admin, "GET", w+"/", nil, nil); !strings.Contains(body, `href="/-/admin"`) {
+		t.Error("no Administration link for the administrator")
+	}
+	if _, _, body := fetch(t, alice, "GET", w+"/", nil, nil); strings.Contains(body, `href="/-/admin"`) {
+		t.Error("Administration link for alice")
+	}
+	for _, p := range []string{"/-/admin/users", "/-/admin/tokens", "/-/admin/s3keys", "/-/admin/acl", "/-/admin/namespaces", "/-/admin/users/bob"} {
+		if status, _, _ := fetch(t, alice, "GET", w+p, nil, nil); status != 403 {
+			t.Errorf("alice GET %s: %d", p, status)
+		}
+	}
+
+	// Users.
+	status, _, body := fetch(t, admin, "GET", w+"/-/admin/users", nil, nil)
+	if status != 200 || !strings.Contains(body, "user:alice") || !strings.Contains(body, `server admin</span>`) {
+		t.Fatalf("users: %d\n%s", status, body)
+	}
+	status, path, _ := fetch(t, admin, "POST", w+"/-/admin/users", url.Values{"name": {"dave"}, "groups": {"eng, ops"}}, nil)
+	if status != 200 || path != "/-/admin/users/dave" {
+		t.Fatalf("add dave: %d %s", status, path)
+	}
+	if status, _, body = fetch(t, admin, "POST", w+"/-/admin/users", url.Values{"name": {"dave"}}, nil); status != 400 || !strings.Contains(body, "the name is taken") {
+		t.Errorf("add dave twice: %d", status)
+	}
+	if _, path, _ = fetch(t, admin, "POST", w+"/-/admin/users/dave/groups", url.Values{"groups": {"eng"}}, nil); path != "/-/admin/users/dave" {
+		t.Errorf("set groups: %s", path)
+	}
+	if _, _, body = fetch(t, admin, "GET", w+"/-/admin/users/dave", nil, nil); !strings.Contains(body, `value="group:eng"`) {
+		t.Errorf("dave's groups:\n%s", body)
+	}
+
+	// A token for dave, shown once; revoked from his page.
+	_, _, body = fetch(t, admin, "POST", w+"/-/admin/users/dave/tokens", url.Values{"description": {"ci"}, "days": {"0"}}, nil)
+	i := strings.Index(body, `value="f1_`)
+	if i < 0 {
+		t.Fatalf("no new token:\n%s", body)
+	}
+	secret := body[i+len(`value="`):]
+	secret = secret[:strings.IndexByte(secret, '"')]
+	dave := f1client.New(e.url, secret)
+	if me, err := dave.Me(ctx); err != nil || me.Principal != "user:dave" {
+		t.Fatalf("dave's token: %+v %v", me, err)
+	}
+	toks, _ := e.admin.AdminTokens(ctx, "dave")
+	if len(toks) != 1 || toks[0].Expires != nil {
+		t.Fatalf("dave's tokens: %+v", toks)
+	}
+	if _, _, body = fetch(t, admin, "GET", w+"/-/admin/tokens", nil, nil); !strings.Contains(body, toks[0].ID) {
+		t.Error("the token is not on the tokens page")
+	}
+	_, _, body = fetch(t, admin, "GET", w+"/-/admin/tokens/"+toks[0].ID+"/revoke?back=/-/admin/users/dave", nil, nil)
+	if !strings.Contains(body, `name="back" value="/-/admin/users/dave"`) {
+		t.Fatalf("confirm revoke:\n%s", body)
+	}
+	if _, path, _ = fetch(t, admin, "POST", w+"/-/admin/tokens/"+toks[0].ID+"/revoke", url.Values{"back": {"/-/admin/users/dave"}}, nil); path != "/-/admin/users/dave" {
+		t.Errorf("after revoking: %s", path)
+	}
+	if _, err := dave.Me(ctx); f1client.Code(err) != f1client.CodeUnauthenticated {
+		t.Errorf("revoked token: %v", err)
+	}
+	// back must stay on the administration pages.
+	_, _, body = fetch(t, admin, "GET", w+"/-/admin/s3keys/"+e.s3keys["bob"].AccessKey+"/revoke?back=//evil.example/", nil, nil)
+	if !strings.Contains(body, `name="back" value="/-/admin/s3keys"`) {
+		t.Errorf("foreign back kept:\n%s", body)
+	}
+	fetch(t, admin, "POST", w+"/-/admin/s3keys/"+e.s3keys["bob"].AccessKey+"/revoke", url.Values{}, nil)
+	if keys, _ := e.admin.AdminS3Keys(ctx, "bob"); len(keys) != 0 {
+		t.Errorf("bob's S3 keys: %+v", keys)
+	}
+
+	// Disable and enable; the administrator cannot disable themselves.
+	if _, _, body = fetch(t, admin, "GET", w+"/-/admin/users/bob/disable", nil, nil); !strings.Contains(body, `action="/-/admin/users/bob/disable"`) {
+		t.Fatalf("confirm disable:\n%s", body)
+	}
+	fetch(t, admin, "POST", w+"/-/admin/users/bob/disable", url.Values{}, nil)
+	if _, err := e.bob.Me(ctx); f1client.Code(err) != f1client.CodeUnauthenticated {
+		t.Errorf("disabled bob: %v", err)
+	}
+	fetch(t, admin, "POST", w+"/-/admin/users/bob/enable", url.Values{}, nil)
+	if _, err := e.bob.Me(ctx); err != nil {
+		t.Errorf("enabled bob: %v", err)
+	}
+	if status, _, body = fetch(t, admin, "POST", w+"/-/admin/users/admin/disable", url.Values{}, nil); status != 400 || !strings.Contains(body, "cannot disable yourself") {
+		t.Errorf("disable yourself: %d", status)
+	}
+
+	// The server's ACL: the last administrator stays.
+	if _, _, body = fetch(t, admin, "GET", w+"/-/admin/acl", nil, nil); !strings.Contains(body, "Server access") || !strings.Contains(body, "user:admin") {
+		t.Fatalf("server access:\n%s", body)
+	}
+	status, _, body = fetch(t, admin, "POST", w+"/-/admin/acl/remove", url.Values{"principal": {"user:admin"}, "prefix": {""}}, nil)
+	if status != 409 || !strings.Contains(body, "no enabled administrator") {
+		t.Errorf("remove the last administrator: %d\n%s", status, body)
+	}
+
+	// Namespaces.
+	if _, path, _ = fetch(t, admin, "POST", w+"/-/admin/namespaces", url.Values{"name": {"code"}, "preset": {"git"}}, nil); path != "/code" {
+		t.Fatalf("create namespace: %s", path)
+	}
+	if status, _, body = fetch(t, admin, "POST", w+"/-/admin/namespaces", url.Values{"name": {"code"}}, nil); status != 400 || !strings.Contains(body, "the name is taken") {
+		t.Errorf("create it twice: %d", status)
+	}
+	if ns, _ := e.admin.Namespaces(ctx); len(ns) != 1 || !ns[0].Config.Git {
+		t.Errorf("namespaces: %+v", ns)
+	}
+}

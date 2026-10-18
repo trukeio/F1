@@ -252,7 +252,9 @@ h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; }
   .sidenav a { border-left: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
   .sidenav a.sel { border-bottom-color: var(--sel); }
 }
-table.props th { text-align: left; padding-right: 24px; }
+table.props { border-collapse: collapse; margin-bottom: 8px; }
+table.props th { text-align: left; font-weight: 600; padding: 4px 24px 4px 0; vertical-align: top; }
+table.props td { padding: 4px 0; }
 td.actions { text-align: right; white-space: nowrap; }
 .btn.danger { color: var(--danger); }
 .btn.danger:hover { color: #fff; background: var(--danger); border-color: transparent; }
@@ -272,3 +274,4 @@ fieldset.perms legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
 label.check { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; margin-right: 16px; }
 fieldset.perms p { margin: 8px 0 0; font-size: 12px; }
 .result { margin-top: 12px; border-top: 1px solid var(--border); }
+.form > p:first-child { margin-top: 0; }

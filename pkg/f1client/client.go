@@ -475,6 +475,63 @@ func (c *Client) DeleteACL(ctx context.Context, ns, principal, prefix string) er
 	return c.do(ctx, http.MethodDelete, "/ns/"+seg(ns)+"/acl?"+q.Encode(), nil, nil)
 }
 
+// Server administration (ADR-0020, item 5). Every method needs a server
+// administrator.
+
+// AdminPrincipals lists local users and the OIDC users F1 has seen.
+func (c *Client) AdminPrincipals(ctx context.Context) ([]Principal, error) {
+	var out []Principal
+	return out, c.do(ctx, http.MethodGet, "/admin/principals", nil, &out)
+}
+
+// AdminCreateUser adds a local user.
+func (c *Client) AdminCreateUser(ctx context.Context, req CreateUserRequest) (Principal, error) {
+	var out Principal
+	return out, c.do(ctx, http.MethodPost, "/admin/users", req, &out)
+}
+
+// AdminSetGroups replaces a local user's groups.
+func (c *Client) AdminSetGroups(ctx context.Context, user string, groups []string) error {
+	return c.do(ctx, http.MethodPut, "/admin/users/"+seg(user)+"/groups", map[string][]string{"groups": groups}, nil)
+}
+
+// AdminSetDisabled disables or enables a principal, local or OIDC. A
+// disabled principal's credentials are all refused.
+func (c *Client) AdminSetDisabled(ctx context.Context, principal string, disabled bool) error {
+	return c.do(ctx, http.MethodPut, "/admin/principals/"+seg(principal)+"/disabled", map[string]bool{"disabled": disabled}, nil)
+}
+
+// AdminTokens lists the tokens of a principal ("" for all) that are not
+// revoked.
+func (c *Client) AdminTokens(ctx context.Context, principal string) ([]Token, error) {
+	var out []Token
+	return out, c.do(ctx, http.MethodGet, "/admin/tokens?"+url.Values{"principal": {principal}}.Encode(), nil, &out)
+}
+
+// AdminCreateToken creates a token for a principal. The secret is
+// returned only here.
+func (c *Client) AdminCreateToken(ctx context.Context, req AdminTokenRequest) (Token, error) {
+	var out Token
+	return out, c.do(ctx, http.MethodPost, "/admin/tokens", req, &out)
+}
+
+// AdminDeleteToken revokes any token.
+func (c *Client) AdminDeleteToken(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/admin/tokens/"+seg(id), nil, nil)
+}
+
+// AdminS3Keys lists the S3 keys of a principal ("" for all), without
+// secrets.
+func (c *Client) AdminS3Keys(ctx context.Context, principal string) ([]S3Key, error) {
+	var out []S3Key
+	return out, c.do(ctx, http.MethodGet, "/admin/s3keys?"+url.Values{"principal": {principal}}.Encode(), nil, &out)
+}
+
+// AdminDeleteS3Key revokes any S3 key.
+func (c *Client) AdminDeleteS3Key(ctx context.Context, accessKey string) error {
+	return c.do(ctx, http.MethodDelete, "/admin/s3keys/"+seg(accessKey), nil, nil)
+}
+
 // CreateToken creates a token for the caller. The secret is returned only
 // here.
 func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (Token, error) {

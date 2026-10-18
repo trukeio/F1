@@ -3,7 +3,7 @@
 {{template "settingsnav" .}}
 <section>
   <h1>Profile</h1>
-  <table class="grid props">
+  <table class="props">
     <tr><th>Principal</th><td class="mono">{{.Me.Principal}}</td></tr>
     <tr><th>Groups</th><td>{{range .Me.Groups}}<span class="tag">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</td></tr>
   </table>
