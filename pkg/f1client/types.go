@@ -195,6 +195,24 @@ type S3Key struct {
 	Created   time.Time `json:"created"`
 }
 
+// Token is a local API token ("f1_..."). Secret is returned only when the
+// token is created.
+type Token struct {
+	ID          string     `json:"id"`
+	Principal   string     `json:"principal"`
+	Description string     `json:"description,omitempty"`
+	Created     time.Time  `json:"created"`
+	Expires     *time.Time `json:"expires,omitempty"` // nil: never
+	Secret      string     `json:"secret,omitempty"`
+}
+
+// CreateTokenRequest creates a token for the caller. Expires is required,
+// and at most the server's auth.token_max_ttl from now.
+type CreateTokenRequest struct {
+	Description string    `json:"description,omitempty"`
+	Expires     time.Time `json:"expires"`
+}
+
 // Error is the body of every error response.
 type Error struct {
 	Code    string `json:"code"`

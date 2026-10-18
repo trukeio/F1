@@ -385,6 +385,66 @@ func TestOIDCEndToEnd(t *testing.T) {
 	}
 }
 
+// Users create, list and revoke their own tokens (ADR-0020).
+func TestSelfServiceTokens(t *testing.T) {
+	p := oidctest.New(t)
+	e := start(t, envOpts{oidc: []auth.OIDCConfig{{Name: "corp", Issuer: p.Issuer(), Audiences: []string{"f1"}}}})
+	e.createNS(t, "proj", "")
+	e.setACL(t, "proj", "group:eng", "", "read,write")
+
+	tok, err := e.alice.CreateToken(ctx, f1client.CreateTokenRequest{Description: "laptop", Expires: time.Now().Add(24 * time.Hour)})
+	if err != nil || !strings.HasPrefix(tok.Secret, "f1_") || tok.Principal != "user:alice" || tok.Expires == nil {
+		t.Fatalf("token = %+v, %v", tok, err)
+	}
+	alice2 := f1client.New(e.url, tok.Secret)
+	first := put(t, alice2, "proj", "a.txt", "a", "new")
+
+	for name, req := range map[string]f1client.CreateTokenRequest{
+		"no expiry":   {},
+		"past":        {Expires: time.Now().Add(-time.Minute)},
+		"beyond max":  {Expires: time.Now().Add(91 * 24 * time.Hour)},
+		"description": {Description: strings.Repeat("x", 201), Expires: time.Now().Add(time.Hour)},
+	} {
+		if _, err := e.alice.CreateToken(ctx, req); f1client.Code(err) != f1client.CodeBadRequest {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	toks, err := e.alice.Tokens(ctx)
+	if err != nil || len(toks) != 2 {
+		t.Fatalf("tokens = %+v, %v", toks, err)
+	}
+	for _, x := range toks {
+		if x.Secret != "" || x.Principal != "user:alice" {
+			t.Errorf("listed token = %+v", x)
+		}
+	}
+	// Another user's token is not found, and stays valid.
+	if err := e.bob.DeleteToken(ctx, tok.ID); f1client.Code(err) != f1client.CodeNotFound {
+		t.Fatalf("bob revokes alice's token: %v", err)
+	}
+	if err := e.alice.DeleteToken(ctx, tok.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice2.Me(ctx); f1client.Code(err) != f1client.CodeUnauthenticated {
+		t.Fatalf("revoked token: %v", err)
+	}
+	if toks, _ := e.alice.Tokens(ctx); len(toks) != 1 {
+		t.Errorf("revoked token still listed: %+v", toks)
+	}
+	if err := e.alice.DeleteToken(ctx, tok.ID); f1client.Code(err) != f1client.CodeNotFound {
+		t.Errorf("second revocation: %v", err)
+	}
+
+	// An OIDC user's token carries the groups of the user's last OIDC token.
+	carol := f1client.New(e.url, p.Token(t, "rsa1", jose.RS256, p.Claims("carol", "f1", []string{"eng"}, nil)))
+	ct, err := carol.CreateToken(ctx, f1client.CreateTokenRequest{Description: "git", Expires: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, f1client.New(e.url, ct.Secret), "proj", "c.txt", "c", first.Commit)
+}
+
 func TestNamespaceAdmin(t *testing.T) {
 	e := start(t, envOpts{})
 	if _, err := e.alice.CreateNamespace(ctx, f1client.CreateNamespaceRequest{Name: "x"}); f1client.Code(err) != f1client.CodeForbidden {

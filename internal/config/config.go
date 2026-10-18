@@ -30,13 +30,23 @@ type Auth struct {
 	// identity provider that G1 also trusts).
 	OIDC []auth.OIDCConfig `toml:"oidc"`
 	// S3GroupTTL is how long an external principal's groups, recorded at its
-	// last token use, apply to its S3 key requests. Default "24h".
+	// last OIDC token use, apply to its S3 key requests and to its local
+	// tokens. Default "24h".
 	S3GroupTTL string `toml:"s3_group_ttl"`
+	// TokenMaxTTL is the longest expiry users may give the tokens they
+	// create themselves (ADR-0020). Default "2160h" (90 days).
+	TokenMaxTTL string `toml:"token_max_ttl"`
 }
 
 // GroupTTL returns the parsed S3GroupTTL.
 func (a Auth) GroupTTL() time.Duration {
 	d, _ := time.ParseDuration(a.S3GroupTTL)
+	return d
+}
+
+// MaxTokenTTL returns the parsed TokenMaxTTL.
+func (a Auth) MaxTokenTTL() time.Duration {
+	d, _ := time.ParseDuration(a.TokenMaxTTL)
 	return d
 }
 
@@ -146,7 +156,7 @@ func Default() Config {
 			Level:  "info",
 			Format: "text",
 		},
-		Auth: Auth{S3GroupTTL: "24h"},
+		Auth: Auth{S3GroupTTL: "24h", TokenMaxTTL: "2160h"},
 	}
 }
 
@@ -222,6 +232,9 @@ func (c Config) Validate() error {
 	}
 	if d, err := time.ParseDuration(c.Auth.S3GroupTTL); err != nil || d <= 0 {
 		errs = append(errs, fmt.Errorf("auth.s3_group_ttl: %q is not a positive duration", c.Auth.S3GroupTTL))
+	}
+	if d, err := time.ParseDuration(c.Auth.TokenMaxTTL); err != nil || d <= 0 {
+		errs = append(errs, fmt.Errorf("auth.token_max_ttl: %q is not a positive duration", c.Auth.TokenMaxTTL))
 	}
 	names := map[string]bool{}
 	for i := range c.Auth.OIDC {

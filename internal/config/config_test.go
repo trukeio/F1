@@ -54,7 +54,7 @@ format = "json"
 			GC:      GC{Interval: "24h", Grace: "24h"},
 			Metrics: Metrics{Enabled: true}},
 		Log:  Log{Level: "debug", Format: "json"},
-		Auth: Auth{S3GroupTTL: "24h"},
+		Auth: Auth{S3GroupTTL: "24h", TokenMaxTTL: "2160h"},
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -98,6 +98,7 @@ func TestAuthConfig(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `
 [auth]
 s3_group_ttl = "1h"
+token_max_ttl = "720h"
 
 [[auth.oidc]]
 name = "corp"
@@ -108,11 +109,12 @@ group_claims = ["groups", "roles"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Auth.GroupTTL().Hours() != 1 || len(cfg.Auth.OIDC) != 1 || cfg.Auth.OIDC[0].Audiences[0] != "f1" {
+	if cfg.Auth.GroupTTL().Hours() != 1 || cfg.Auth.MaxTokenTTL().Hours() != 720 || len(cfg.Auth.OIDC) != 1 || cfg.Auth.OIDC[0].Audiences[0] != "f1" {
 		t.Fatalf("auth = %+v", cfg.Auth)
 	}
 	for _, bad := range []string{
 		"[auth]\ns3_group_ttl = \"forever\"",
+		"[auth]\ntoken_max_ttl = \"0s\"",
 		"[[auth.oidc]]\nname = \"corp\"",                                        // no issuer or audience
 		"[[auth.oidc]]\nname = \"local\"\nissuer = \"x\"\naudiences = [\"f1\"]", // reserved name
 	} {

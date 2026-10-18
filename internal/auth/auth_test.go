@@ -132,7 +132,7 @@ func TestLocalTokens(t *testing.T) {
 	}
 	db.SetDisabled(ctx, "user:alice", false)
 	toks, _ := db.Tokens(ctx, "user:alice")
-	db.RevokeToken(ctx, toks[0].ID)
+	db.RevokeToken(ctx, "", toks[0].ID)
 	if _, err := chain.Authenticate(ctx, secret, "test"); err == nil {
 		t.Error("revoked token accepted")
 	}
@@ -140,6 +140,26 @@ func TestLocalTokens(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 	if _, err := chain.Authenticate(ctx, short, "test"); err == nil {
 		t.Error("expired token accepted")
+	}
+}
+
+// A local token of an external principal carries the groups of its last
+// OIDC token, for at most GroupTTL (ADR-0020).
+func TestLocalTokenOfExternalPrincipal(t *testing.T) {
+	db := newDB(t)
+	if _, err := db.SeenExternal(ctx, "user:carol", "corp", []string{"group:eng"}); err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := db.CreateToken(ctx, "user:carol", "git", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ttl, want := range map[time.Duration]string{time.Hour: "group:eng", 0: ""} {
+		chain := &Chain{Verifiers: []Verifier{&LocalTokens{DB: db, GroupTTL: ttl}}}
+		c, err := chain.Authenticate(ctx, secret, "test")
+		if err != nil || c.Principal != "user:carol" || strings.Join(c.Groups, ",") != want {
+			t.Errorf("GroupTTL %s: caller = %+v, %v", ttl, c, err)
+		}
 	}
 }
 

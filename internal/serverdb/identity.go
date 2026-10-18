@@ -275,9 +275,11 @@ func (d *DB) VerifyToken(ctx context.Context, secret string) (Principal, error) 
 	return d.LookupPrincipal(ctx, name)
 }
 
-// RevokeToken revokes a token by id.
-func (d *DB) RevokeToken(ctx context.Context, id string) error {
-	res, err := d.db.ExecContext(ctx, `UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at = 0`, time.Now().Unix(), id)
+// RevokeToken revokes a token by id. A principal other than "" revokes
+// only its own token.
+func (d *DB) RevokeToken(ctx context.Context, principal, id string) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE tokens SET revoked_at = ? WHERE id = ? AND (? = '' OR principal = ?) AND revoked_at = 0`,
+		time.Now().Unix(), id, principal, principal)
 	if err != nil {
 		return err
 	}

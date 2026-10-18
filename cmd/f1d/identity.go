@@ -201,7 +201,7 @@ func identityCmd(ctx context.Context, group string, args []string, stdout, stder
 		if len(a) != 1 {
 			return usage()
 		}
-		if err := db.RevokeToken(ctx, a[0]); err != nil {
+		if err := db.RevokeToken(ctx, "", a[0]); err != nil {
 			return fail(err)
 		}
 	case "s3key create":

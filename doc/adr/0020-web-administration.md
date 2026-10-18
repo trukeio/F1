@@ -13,7 +13,7 @@ What exists today:
 - `f1d user`, `token`, `s3key` and `acl` write `server.db` directly, on the server host. The native API has only `GET /me`, the caller's own S3 keys (`/me/s3keys`) and namespace creation (`POST /ns`, server administrators).
 - Server administrators have `admin` on namespace `*` with prefix `""`. A namespace administrator has `admin` at prefix `""` of that namespace (ADR-0006).
 - Local users authenticate with `f1_` tokens; OIDC users with the provider's access tokens, and F1 records them in `principals` with the groups of their last token (ADR-0005).
-- `f1web` signs users in (OIDC, or a pasted `f1_` token), keeps sessions in memory and calls the native API as the user. It changes nothing yet, so it has no CSRF protection beyond `SameSite=Lax` cookies.
+- `f1web` signs users in (OIDC, or a pasted `f1_` token), keeps sessions in memory and calls the native API as the user. It changes nothing yet; its only POSTs (sign-in, sign-out) already pass Go's `http.CrossOriginProtection`.
 - Repository operations (freeze, attach, gc, backup, import) run on the host through `admin.sock`.
 
 Several of the decisions below were discussed and rejected first: moving identity to a shared library or service with G1, and making F1 OIDC-only. F1 keeps its local users and its own `server.db`.
@@ -95,7 +95,7 @@ Several of the decisions below were discussed and rejected first: moving identit
 
 ### Protection
 
-11. **CSRF.** Every unsafe request (`POST`, `PUT`, `DELETE`) to `f1web`, existing sign-in and sign-out included, passes Go's `http.CrossOriginProtection` (Go 1.25): it rejects cross-origin requests by `Sec-Fetch-Site`, or `Origin` against `Host` in older browsers. `SameSite=Lax` stays. No new dependency, and no tokens in forms.
+11. **CSRF.** Every unsafe request (`POST`, `PUT`, `DELETE`) to `f1web` passes Go's `http.CrossOriginProtection` (Go 1.25), as sign-in and sign-out already do: it rejects cross-origin requests by `Sec-Fetch-Site`, or `Origin` against `Host` in older browsers. `SameSite=Lax` stays. No new dependency, and no tokens in forms.
 12. **Recent sign-in for administration.** Changes under `/-/admin` and `/{ns}/settings` require a sign-in no older than `admin_max_age` (configuration, default 1 hour). An older session is sent to sign in again: for OIDC with `max_age=0` (the provider asks again, with MFA if it requires it), for local users by pasting the token again. Self-service settings do not need it.
 13. **Rate and size.** Admin and settings forms are small; f1web limits their bodies to 64 kB.
 
@@ -103,7 +103,7 @@ Several of the decisions below were discussed and rejected first: moving identit
 
 14. Each phase passes `make ci`.
     - **A0:** this ADR.
-    - **A1:** API for self-service tokens (item 4), groups for OIDC principals' tokens, `token_max_ttl`; `pkg/f1client` methods. CSRF protection for `f1web` (item 11).
+    - **A1:** API for self-service tokens (item 4), groups for OIDC principals' tokens, `token_max_ttl`; `pkg/f1client` methods. Tests of `f1web`'s CSRF protection (item 11).
     - **A2:** `/-/settings` pages (items 8–10).
     - **A3:** ACL API (item 6), guards (item 7), security events; the namespace access page with "check access"; recent sign-in (item 12).
     - **A4:** server administration API (item 5) and the `/-/admin` pages; manual: a chapter on administering F1 in a browser, `f1web` configuration.

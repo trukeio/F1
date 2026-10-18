@@ -86,7 +86,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(Ad
 		}
 	}
 
-	chain := &auth.Chain{Verifiers: []auth.Verifier{&auth.LocalTokens{DB: db}}, Log: log}
+	chain := &auth.Chain{Verifiers: []auth.Verifier{&auth.LocalTokens{DB: db, GroupTTL: cfg.Auth.GroupTTL()}}, Log: log}
 	for _, oc := range cfg.Auth.OIDC {
 		v, err := auth.NewOIDC(oc, db, nil)
 		if err != nil {
@@ -95,7 +95,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, ready func(Ad
 		chain.Verifiers = append(chain.Verifiers, v)
 	}
 	acl := &auth.Authorizer{DB: db}
-	nativeAPI := &native.Server{Repos: mgr, Auth: chain, ACL: acl, DB: db, Log: log}
+	nativeAPI := &native.Server{Repos: mgr, Auth: chain, ACL: acl, DB: db, Log: log, TokenMaxTTL: cfg.Auth.MaxTokenTTL()}
 
 	newServer := func(h http.Handler) *http.Server {
 		return &http.Server{

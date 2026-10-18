@@ -453,3 +453,22 @@ func (c *Client) S3Keys(ctx context.Context) ([]S3Key, error) {
 func (c *Client) DeleteS3Key(ctx context.Context, accessKey string) error {
 	return c.do(ctx, http.MethodDelete, "/me/s3keys/"+seg(accessKey), nil, nil)
 }
+
+// CreateToken creates a token for the caller. The secret is returned only
+// here.
+func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (Token, error) {
+	var out Token
+	return out, c.do(ctx, http.MethodPost, "/me/tokens", req, &out)
+}
+
+// Tokens lists the caller's tokens that are not revoked (without secrets).
+// Expired tokens are listed until revoked.
+func (c *Client) Tokens(ctx context.Context) ([]Token, error) {
+	var out []Token
+	return out, c.do(ctx, http.MethodGet, "/me/tokens", nil, &out)
+}
+
+// DeleteToken revokes one of the caller's tokens.
+func (c *Client) DeleteToken(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/me/tokens/"+seg(id), nil, nil)
+}

@@ -73,6 +73,9 @@ func (c *Chain) Authenticate(ctx context.Context, token, remote string) (*Caller
 // LocalTokens verifies the server's own opaque tokens ("f1_...").
 type LocalTokens struct {
 	DB *serverdb.DB
+	// GroupTTL: tokens of external principals carry the groups of their
+	// last OIDC token for at most this long, as S3 keys do (ADR-0020).
+	GroupTTL time.Duration
 }
 
 // Verify implements Verifier.
@@ -87,7 +90,7 @@ func (l *LocalTokens) Verify(ctx context.Context, token string) (*Caller, error)
 	if p.Disabled {
 		return nil, fmt.Errorf("local token: principal %s is disabled", p.Name)
 	}
-	return callerFor(ctx, l.DB, p, 0)
+	return callerFor(ctx, l.DB, p, l.GroupTTL)
 }
 
 // callerFor builds the caller for a principal authenticated without a

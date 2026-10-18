@@ -781,6 +781,7 @@ Paths below are relative to `/api/v1`.
 | `GET /ns/{ns}/archive` | the repository as a ZIP | admin |
 | `GET /me` | who you are, with your groups | |
 | `POST`, `GET /me/s3keys`, `DELETE /me/s3keys/{key}` | your S3 keys | |
+| `POST`, `GET /me/tokens`, `DELETE /me/tokens/{id}` | your tokens: `{"description", "expires"}` creates one (§4.3) | |
 
 The object endpoints are what the native client uses to push: upload the content the server lacks, then commit it. They take hashes rather than paths, so they need read permission on the whole namespace (D13). The pack stream and object encodings are specified in [`doc/format.md`](format.md). The server computes content digests itself and refuses uploaded DigestRecords.
 
@@ -977,7 +978,8 @@ $ docker exec f1 f1d user add alice --config /etc/f1/f1d.toml
 | `server.metrics.enabled` | `true` | serve `/metrics` (no authentication) |
 | `server.metrics.namespaces` | `false` | storage metrics per namespace (reveal namespace names) |
 | `[[auth.oidc]]` | none | trusted OIDC providers (§4.3) |
-| `auth.s3_group_ttl` | `24h` | how long an OIDC user's groups apply to their S3 keys |
+| `auth.s3_group_ttl` | `24h` | how long an OIDC user's groups apply to their S3 keys and tokens |
+| `auth.token_max_ttl` | `2160h` | the longest expiry of a token users create themselves (90 days) |
 | `log.level` | `info` | `debug`, `info`, `warn`, `error` |
 | `log.format` | `text` | `text` or `json` |
 
@@ -1035,6 +1037,16 @@ $ f1d user enable alice
 ```
 
 Tokens start with `f1_` and are stored hashed; a lost token cannot be shown again, only revoked and replaced.
+
+Any authenticated user, OIDC users included, can create tokens for themselves, for Git or scripts:
+
+```sh
+$ curl -s -H "Authorization: Bearer $F1_TOKEN" -d '{"description":"git","expires":"2026-12-31T00:00:00Z"}' \
+    http://f1.example.com:8080/api/v1/me/tokens
+{"id":"tok_k3v9qz2a","principal":"user:alice","description":"git","created":"2026-10-18T10:00:00Z","expires":"2026-12-31T00:00:00Z","secret":"f1_…"}
+```
+
+The expiry is required, and at most `auth.token_max_ttl` (90 days by default) away; only `f1d token create` makes tokens that never expire. `GET /api/v1/me/tokens` lists your tokens and `DELETE /api/v1/me/tokens/<id>` revokes one. A token of an OIDC user carries the groups of the user's last OIDC token, for at most `auth.s3_group_ttl`, as S3 keys do.
 
 ### OIDC
 

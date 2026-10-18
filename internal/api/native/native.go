@@ -41,6 +41,9 @@ type Server struct {
 	ACL   *auth.Authorizer
 	DB    *serverdb.DB
 	Log   *slog.Logger
+	// TokenMaxTTL is the longest expiry of a token created through
+	// /me/tokens (ADR-0020).
+	TokenMaxTTL time.Duration
 }
 
 type callerKey struct{}
@@ -64,6 +67,9 @@ func (s *Server) Handler() http.Handler {
 	h("POST /api/v1/me/s3keys", s.createS3Key)
 	h("GET /api/v1/me/s3keys", s.listS3Keys)
 	h("DELETE /api/v1/me/s3keys/{key}", s.deleteS3Key)
+	h("POST /api/v1/me/tokens", s.createToken)
+	h("GET /api/v1/me/tokens", s.listTokens)
+	h("DELETE /api/v1/me/tokens/{id}", s.deleteToken)
 	h("GET /api/v1/ns", s.listNamespaces)
 	h("POST /api/v1/ns", s.createNamespace)
 	h("GET /api/v1/ns/{ns}/refs", s.listRefs)
@@ -323,6 +329,73 @@ func (s *Server) deleteS3Key(w http.ResponseWriter, r *http.Request) error {
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// maxTokenDescription limits the description of a token created through
+// the API.
+const maxTokenDescription = 200
+
+func (s *Server) createToken(w http.ResponseWriter, r *http.Request) error {
+	c := callerFrom(r.Context())
+	var req api.CreateTokenRequest
+	if err := readJSON(r, &req); err != nil {
+		return err
+	}
+	if len(req.Description) > maxTokenDescription {
+		return badRequest("the description is longer than %d bytes", maxTokenDescription)
+	}
+	ttl := time.Until(req.Expires)
+	switch {
+	case req.Expires.IsZero():
+		return badRequest("expires is required")
+	case ttl <= 0:
+		return badRequest("expires is in the past")
+	case ttl > s.TokenMaxTTL:
+		return badRequest("expires is more than %s from now", s.TokenMaxTTL)
+	}
+	t, secret, err := s.DB.CreateToken(r.Context(), c.Principal, req.Description, ttl)
+	if err != nil {
+		return err
+	}
+	s.Log.Info("security: token created", "principal", c.Principal, "token", t.ID, "expires", t.Expires)
+	out := tokenInfo(t)
+	out.Secret = secret
+	return writeJSON(w, out)
+}
+
+func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) error {
+	toks, err := s.DB.Tokens(r.Context(), callerFrom(r.Context()).Principal)
+	if err != nil {
+		return err
+	}
+	out := []api.Token{}
+	for _, t := range toks {
+		if !t.Revoked {
+			out = append(out, tokenInfo(t))
+		}
+	}
+	return writeJSON(w, out)
+}
+
+func (s *Server) deleteToken(w http.ResponseWriter, r *http.Request) error {
+	c := callerFrom(r.Context())
+	if err := s.DB.RevokeToken(r.Context(), c.Principal, r.PathValue("id")); err != nil {
+		if errors.Is(err, serverdb.ErrNoToken) {
+			return newErr(http.StatusNotFound, api.CodeNotFound, "no such token")
+		}
+		return err
+	}
+	s.Log.Info("security: token revoked", "principal", c.Principal, "token", r.PathValue("id"))
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func tokenInfo(t serverdb.Token) api.Token {
+	out := api.Token{ID: t.ID, Principal: t.Principal, Description: t.Description, Created: t.Created}
+	if !t.Expires.IsZero() {
+		out.Expires = &t.Expires
+	}
+	return out
 }
 
 // --- namespaces and refs ---

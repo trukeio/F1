@@ -41,7 +41,8 @@ The server runs on Linux, macOS and the BSDs. Clients run anywhere.
 | `server.metrics.enabled` | `true` | Serve `/metrics` (unauthenticated) |
 | `server.metrics.namespaces` | `false` | Per-namespace storage metrics (reveal namespace names) |
 | `[[auth.oidc]]` | none | Trusted OIDC providers (ADR-0005) |
-| `auth.s3_group_ttl` | `24h` | How long an OIDC principal's groups apply to its S3 keys |
+| `auth.s3_group_ttl` | `24h` | How long an OIDC principal's groups apply to its S3 keys and local tokens |
+| `auth.token_max_ttl` | `2160h` | Longest expiry of a token users create themselves with `POST /api/v1/me/tokens` |
 | `log.level`, `log.format` | `info`, `text` | `debug`, `info`, `warn`, `error`; `text` or `json` |
 
 ### Admin commands while the server runs
@@ -54,6 +55,7 @@ Admin commands that act on a running server talk to it over `<data_dir>/admin.so
   - `f1d user add alice --group eng` creates a user.
   - `f1d token create alice` prints a bearer token (`f1_...`), once.
   - `f1d token list` and `f1d token revoke <id>` manage tokens.
+  - Any authenticated user, including OIDC users, can create their own with `POST /api/v1/me/tokens`, expiring within `auth.token_max_ttl`.
   - `f1d user disable alice` blocks all of a user's tokens and keys.
 - **OIDC.** Add an `[[auth.oidc]]` section with the issuer, audiences and claims. The users and groups of the enterprise identity provider can then use their access tokens directly (ADR-0005). Principals are `user:<sub>` and `group:<group>`.
 - **S3 keys.**

@@ -121,6 +121,10 @@ func TestWebTokenSignIn(t *testing.T) {
 	if status, _, _ = fetch(t, b, "POST", w+"/-/logout", url.Values{}, http.Header{"Sec-Fetch-Site": {"cross-site"}}); status != 403 {
 		t.Errorf("cross-site sign-out: %d", status)
 	}
+	// Older browsers send only Origin.
+	if status, _, _ = fetch(t, b, "POST", w+"/-/logout", url.Values{}, http.Header{"Origin": {"https://evil.example"}}); status != 403 {
+		t.Errorf("sign-out from another origin: %d", status)
+	}
 	if status, path, _ = fetch(t, b, "POST", w+"/-/logout", url.Values{}, nil); status != 200 || path != "/-/login" {
 		t.Fatalf("sign-out: %d %s", status, path)
 	}
