@@ -587,6 +587,32 @@ F1 keeps LFS only for compatibility. It stores the real content in either case, 
 
 A push whose LFS pointers name objects the server lacks is refused with a message to run `git lfs push`.
 
+### Importing from Git
+
+A repository moves to F1 with its full history by pushing it into a new Git namespace. Start from a bare mirror, so that every branch and tag is local:
+
+```sh
+$ git clone --mirror https://github.com/example/code.git && cd code.git
+$ curl -H "Authorization: Bearer $F1_TOKEN" -d '{"name":"code","preset":"git"}' \
+    http://f1.example.com:8080/api/v1/ns          # or, on the server: f1d ns create code --preset git
+$ git push http://f1.example.com:8080/git/code.git 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+```
+
+- **Only branches and tags.** F1 keeps `refs/heads/` and `refs/tags/`. Other refs, such as `refs/notes/`, `refs/remotes/` or a host's `refs/pull/`, are refused as `invalid ref name`, which is why the example names the two patterns instead of using `git push --mirror`.
+- **The default branch.** The `git` preset's default branch is `main`, and clones check out the default branch. A repository whose default is another branch, say `master`, gets it with a config instead of the preset:
+
+  ```sh
+  $ curl -H "Authorization: Bearer $F1_TOKEN" -d '{"name":"code","config":{"layout":"tree","retention":"all","branches":true,"locks":"exclusive","git":true,"default_ref":"master"}}' \
+      http://f1.example.com:8080/api/v1/ns
+  ```
+
+  For an existing namespace, change `default_ref` in `f1repo.toml` (§2.1).
+- **Git LFS.** Push the LFS objects first; a push of pointers whose objects the server lacks is refused. From a mirror: `git lfs fetch --all`, then `git lfs push --all http://f1.example.com:8080/git/code.git`, then the push above.
+- **Hashes are kept.** Commit, tree and tag SHA-1s are the same as in the source, so existing clones can switch with `git remote set-url origin http://f1.example.com:8080/git/code.git` and fetch as usual.
+- **Permissions.** Creating a namespace needs a server administrator; pushing tags needs `write` on the whole namespace.
+
+The import is an ordinary push: it can be repeated to bring in new commits until users switch, and the push is refused if a branch moved on F1 in the meantime. A code history takes 3 to 6 times the space of its Git pack (§4.11).
+
 ## 2.5 Locks {#locks}
 
 A lock is held by one principal on one path of one branch. The namespace's `locks` setting decides how locks act:
