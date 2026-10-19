@@ -18,6 +18,7 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] W2: read-only pages (namespaces, tree, file, raw, history, commit, compare, branches, tags, locks).
   - [x] W3: syntax highlighting, last commit per directory entry, keyboard shortcuts.
   - [x] W4: Code menu with clone commands (Git, `f1`, S3) and Download ZIP.
+  - [ ] Open PDFs and other binary documents directly in the viewer, without an additional window and without forcing a download.
 - [x] **Design a web application to administer F1.** Manage users and ACLs, and let users get their own tokens and S3 keys, in a browser instead of with `f1d` and the API. Decide whether it is part of `f1web` or a separate server, which administrator rights it needs and how it gets them while calling the API as the signed-in user (ADR-0018, item 3), and what CSRF protection its changes need.
   - Designed in ADR-0020: pages in `f1web` that call new native API endpoints as the signed-in user; CSRF protection by `http.CrossOriginProtection`; recent sign-in for administration.
   - [x] A0: ADR-0020.
@@ -25,6 +26,7 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] A2: `/-/settings` pages.
   - [x] A3: ACL API, guards, security events; namespace access page; recent sign-in.
   - [x] A4: server administration API and `/-/admin` pages; manual.
+- [ ] **Add full name and email to users.** New columns in the `principals` table (a new `serverdb` migration), set by `f1d` and the admin pages for local users and taken from the OIDC claims for OIDC users. Use them as commit author and committer in the native and S3 APIs, which now write the user name as the email.
 - [x] **Import Subversion repositories.** An importer that reads an `svnadmin dump` or `svnrdump` stream and writes one F1 commit per revision, keeping authors, dates and revision numbers, onto refs from the trunk/branches/tags layout (ADR-0017 recommends it). Converting to Git first suits code, not repositories of large binaries.
   - Designed in ADR-0019: `f1d repo import-svn`, run on the server host; dump formats 2 and 3; supported properties mapped, the rest reported; incremental imports until the switch.
   - [x] S0: ADR-0019.
