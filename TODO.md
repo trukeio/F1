@@ -19,6 +19,7 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] W3: syntax highlighting, last commit per directory entry, keyboard shortcuts.
   - [x] W4: Code menu with clone commands (Git, `f1`, S3) and Download ZIP.
   - [ ] Open PDFs and other binary documents directly in the viewer, without an additional window and without forcing a download.
+  - [ ] An option to render any Markdown file paged and typeset with `folio` (`../folio`), the client-side paged-media engine: pages, running heads, footnotes, cross-references and mathematics, in the file page and for print or PDF.
 - [x] **Design a web application to administer F1.** Manage users and ACLs, and let users get their own tokens and S3 keys, in a browser instead of with `f1d` and the API. Decide whether it is part of `f1web` or a separate server, which administrator rights it needs and how it gets them while calling the API as the signed-in user (ADR-0018, item 3), and what CSRF protection its changes need.
   - Designed in ADR-0020: pages in `f1web` that call new native API endpoints as the signed-in user; CSRF protection by `http.CrossOriginProtection`; recent sign-in for administration.
   - [x] A0: ADR-0020.
