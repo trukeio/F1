@@ -40,3 +40,11 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] S1: dump reader and svndiff (`internal/svndump`).
   - [x] S2: layout mapping, commits, `f1d repo import-svn`, acceptance test against `svn` 1.14 (`internal/svnimport`).
   - [x] S3: incremental imports (the `notes/svn-import` marker), report, `--dry-run`, size test, manual §2.7.
+- [ ] **Derived files.** Decide where derived files (previews of binary documents, conversions, build outputs) are made and kept, instead of being committed next to their sources.
+  - Proposed in ADR-0022: per-file previews made by `f1web` with external converters, in a disposable cache keyed by content and checked against F1 as the user; per-commit outputs made by CI into a separate builds namespace, linked from commit statuses; committing derived files only in listed cases.
+  - [x] V0: ADR-0022.
+  - [ ] V1: PDFs in the file page (also the viewer item above).
+  - [ ] V2: transformers, cache and isolation; previews in the file page.
+  - [ ] V3: collapse `linguist-generated` files in diffs.
+  - [ ] V4: `f1web derive --follow` (after C2).
+  - [ ] V5: manual chapter "Derived files".
