@@ -616,6 +616,24 @@ F1 keeps LFS only for compatibility. It stores the real content in either case, 
 
 A push whose LFS pointers name objects the server lacks is refused with a message to run `git lfs push`.
 
+### TortoiseGit
+
+[TortoiseGit](https://tortoisegit.org), the Windows Explorer front end to Git, works with a Git namespace as with any Git server over HTTP. It runs Git for Windows, so everything in this section applies; nothing needs to be set up on the server.
+
+- **Clone.** In Explorer, right-click a folder, choose **Git Clone…**, and give the URL `http://f1.example.com:8080/git/code.git`. When asked for credentials, enter any user name and the token as the password. Git for Windows' credential manager keeps the token, so it is asked once; change or remove it in Windows Credential Manager, or choose another helper under **Settings → Git → Credential**.
+- **Daily work.** Commit, **Pull…**, **Push…**, **Sync…**, the log, branches and tags act on F1 as on any Git remote. Commits written through S3 or the native client appear in the log as ordinary commits, authored by their user with time zone `+0000`.
+- **Refused pushes.** A push that changes a file someone else locked, or a path you may not write, fails in the push progress dialog with F1's reason, for example `locked: boards/main.brd is locked by user:alice`. If a branch moved meanwhile (`fetch first`), pull and push again.
+- **Locks.** In a namespace with LFS files, **TortoiseGit → LFS** offers **Lock**, **Unlock** and **Show locked files**. They run `git lfs lock`, `unlock` and `locks`, so they take and show F1 locks, shared with the native client and S3 (§2.5). Unlocking another user's lock with **force** needs `admin` on the path. To get read-only files until locked, as the native client gives under `locks = required`, mark the same patterns `lockable` in `.gitattributes`:
+
+  ```
+  *.brd filter=lfs diff=lfs merge=lfs -text lockable
+  ```
+
+- **Large files.** The clone dialog has no option for partial clone. Make a partial or sparse clone from the command line (see "Large files and partial checkouts" above), then use it from Explorer as usual; Git fetches missing content when a command needs it.
+- **Permissions.** As for any Git client, the token needs read permission on the whole namespace (D13).
+
+Only Git namespaces (`git = true`) are reachable this way. For SVN-style namespaces use the native client `f1` (§2.2), which runs on Windows from a command prompt; it has no Explorer integration in version 1.
+
 ### Importing from Git
 
 A repository moves to F1 with its full history by pushing it into a new Git namespace. Start from a bare mirror, so that every branch and tag is local:
