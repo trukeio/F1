@@ -26,6 +26,13 @@ Open items that are not part of the plan's phases. Each one ends in an ADR or a 
   - [x] A2: `/-/settings` pages.
   - [x] A3: ACL API, guards, security events; namespace access page; recent sign-in.
   - [x] A4: server administration API and `/-/admin` pages; manual.
+- [ ] **Integrate continuous integration.** Let CI tools, including board farms for microcontrollers (Raspberry Pi Pico, ESP32) and emulators, build every change and report results that `f1web` shows next to the commits. Decide what F1 provides and what stays in external tools.
+  - Proposed in ADR-0021: F1 provides an event feed read from `refs.log` (long polling, for runners behind NAT), signed webhooks and commit statuses with a new `status` permission; jobs, runners and boards stay in external tools.
+  - [x] C0: ADR-0021.
+  - [ ] C1: commit statuses, the `status` permission, `f1 status`; statuses in `f1web`.
+  - [ ] C2: event feed.
+  - [ ] C3: webhooks and `/{ns}/settings/hooks`.
+  - [ ] C4: manual chapter with an example runner and hardware-in-the-loop notes.
 - [ ] **Add full name and email to users.** New columns in the `principals` table (a new `serverdb` migration), set by `f1d` and the admin pages for local users and taken from the OIDC claims for OIDC users. Use them as commit author and committer in the native and S3 APIs, which now write the user name as the email.
 - [x] **Import Subversion repositories.** An importer that reads an `svnadmin dump` or `svnrdump` stream and writes one F1 commit per revision, keeping authors, dates and revision numbers, onto refs from the trunk/branches/tags layout (ADR-0017 recommends it). Converting to Git first suits code, not repositories of large binaries.
   - Designed in ADR-0019: `f1d repo import-svn`, run on the server host; dump formats 2 and 3; supported properties mapped, the rest reported; incremental imports until the switch.
