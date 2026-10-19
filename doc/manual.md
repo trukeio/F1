@@ -569,6 +569,35 @@ Fetch packs carry deltas between versions of the same file, as Git does, for fil
 
 Git needs read permission on the whole namespace (D13). Pushes that Git's `fsck` would reject as errors (trees with duplicate entries, SHA-1 collision attacks) are refused.
 
+### Large files and partial checkouts
+
+A file stored without LFS, as every file written through S3, the native client or an SVN import is (§2.7), is an ordinary Git blob with its full content. A plain `git clone` downloads every version of it in the history: three 20 MB versions of a board are 60 MB in `.git`, since versions larger than 1 MiB are sent whole, not as deltas. The server streams them with bounded memory; the cost is on the network and the client's disk.
+
+Partial clone downloads only what the checkout needs. Here `boards` is a Git namespace of circuit boards, imported from SVN with `--create git` (§2.7):
+
+```sh
+$ git clone --filter=blob:limit=1m http://f1.example.com:8080/git/boards.git   # small files now, large ones on demand
+$ git clone --filter=blob:none http://f1.example.com:8080/git/boards.git       # every file on demand
+```
+
+Git fetches a missing version when a command needs it: a checkout of an old commit, a `diff` or a `blame`. The commits and trees of the whole history are always downloaded; they are small next to the content.
+
+To check out only some directories, combine partial clone with Git's sparse checkout:
+
+```sh
+$ git clone --filter=blob:none --sparse http://f1.example.com:8080/git/boards.git
+$ cd boards
+$ git sparse-checkout set docs           # check out docs/ only
+$ git sparse-checkout add boards/rev-c   # and later boards/rev-c/
+```
+
+Only the files under those directories are downloaded, at the commit you check out.
+
+- **Paths stay as they are.** `boards/rev-c` is checked out at `boards/rev-c/`, not at the top of the working copy.
+- **Filters.** F1 accepts `blob:none`, `blob:limit=<n>` and `tree:0`. `tree:0` also leaves out the trees, which Git then fetches one at a time; `blob:none` is faster.
+- **Permissions.** Sparse checkout limits what is downloaded, not what you may read: Git still needs read permission on the whole namespace (D13).
+- **The native client** does the same with `f1 clone --sparse` (§2.2), and keeps no second copy of the files in `.git`. For repositories that are mostly large binaries, it is the better client.
+
 ### Git LFS
 
 LFS works against the same URL with no configuration: the batch API, the `basic` transfer, and the locking API.
@@ -711,6 +740,18 @@ to continue later: svnadmin dump --incremental -r 1875:HEAD <repository> | f1d r
 | locks | not in dumps: take them again in F1 |
 
 The import is history, so the namespace's lock rules do not apply to it. Find a commit by its old revision with `git log --grep '^SVN-Revision: 1234$'`, or in the messages of `f1 log`.
+
+### Large files
+
+Files of any size are imported as ordinary files, chunked and stored once like every other file (§1.2). The import writes no Git LFS pointers and no `.gitattributes`: the native client and S3 do not need them.
+
+In a namespace created with `--create git`, Git clients therefore see each large file as an ordinary blob with its full content. A plain `git clone` downloads every version of every large file in the imported history; Git users should clone with a filter instead, and check out only the directories they need (§2.4):
+
+```sh
+$ git clone --filter=blob:limit=1m http://f1.example.com:8080/git/boards.git
+```
+
+Converting the files to LFS afterwards (`git lfs migrate`) rewrites the history: every commit gets a new SHA, and the `SVN-Revision` lines move to the new commits. Partial clone gives Git users the same savings without it.
 
 ### Importing in steps
 
